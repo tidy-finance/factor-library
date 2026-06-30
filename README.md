@@ -41,6 +41,7 @@ see [Data](#data)). Run them from the project root.
 | [`03_sorting_variables_monthly.R`](03_sorting_variables_monthly.R)<br>[`03_sorting_variables_quarterly.R`](03_sorting_variables_quarterly.R)<br>[`03_sorting_variables_yearly.R`](03_sorting_variables_yearly.R) | `sorting_variables_{monthly,quarterly,yearly}.parquet` | Construct each sorting variable at its native frequency from the raw data. |
 | [`04_sorting_variables_combination_lag.R`](04_sorting_variables_combination_lag.R) | `sorting_variables_lag_{3m,6m,ff}.parquet` | Join the frequency-specific sorting variables onto the CRSP monthly panel under each lag convention (3-month, 6-month, Fama-French July). |
 | [`05_portfolio_sorts.R`](05_portfolio_sorts.R) | `data/portfolio_returns/` (partitioned), `task_diagnostics.parquet` | Runs `implement_portfolio_sort()` across every specification in the grid (in parallel), computes long-short returns, and writes a Hive-partitioned Parquet dataset. |
+| [`06_upload_to_huggingface.R`](06_upload_to_huggingface.R) | `data/publish/portfolio_sort_grid.parquet` | Builds the Hugging-Face-ready grid (strips the `sv_` prefix from `sorting_variable`) and uploads the returns and the grid to Hugging Face via the `hf` CLI. |
 
 The final `data/portfolio_returns/` dataset is partitioned by `sorting_variable`,
 `sorting_variable_lag`, `sorting_method`, and `n_portfolios_main`, which is the layout
@@ -64,20 +65,38 @@ Rscript 04_sorting_variables_combination_lag.R
 Rscript 05_portfolio_sorts.R
 ```
 
-Then upload the resulting `data/portfolio_returns/` dataset to Hugging Face with the
-`hf` CLI (see [Publishing to Hugging Face](#publishing-to-hugging-face)).
+Then publish the results to Hugging Face by running the publish step (see
+[Publishing to Hugging Face](#publishing-to-hugging-face)):
+
+```bash
+Rscript 06_upload_to_huggingface.R       # requires `hf auth login` first
+```
 
 ## Publishing to Hugging Face
 
-The partitioned `data/portfolio_returns/` dataset (together with
-`portfolio_sort_grid.parquet`, which becomes `factor_library_grid` on the Hub) is
-uploaded to [`tidy-finance/factor-library`](https://huggingface.co/datasets/tidy-finance/factor-library)
-using the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli)
-(`hf upload`).
+[`06_upload_to_huggingface.R`](06_upload_to_huggingface.R) publishes two datasets:
 
-<!-- TODO: this upload is currently a manual `hf` CLI step that is not scripted or
-documented here. Add the exact command(s) and, ideally, a small
-`06_upload_to_huggingface.{R,sh}` so the publish step is reproducible. -->
+- the partitioned `data/portfolio_returns/` dataset to
+  [`tidy-finance/factor-library`](https://huggingface.co/datasets/tidy-finance/factor-library), and
+- the construction grid to
+  [`tidy-finance/factor-library-grid`](https://huggingface.co/datasets/tidy-finance/factor-library-grid)
+  (read back through the package as `factor_library_grid`).
+
+Both uploads use the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli)
+(`hf upload`), so authenticate first with `hf auth login` using a token that has
+write access to the `tidy-finance` organization.
+
+### The `sv_` prefix
+
+Inside the pipeline the sorting-variable columns of the panel are named `sv_<name>`
+(e.g. `sv_bm`), and `portfolio_sort_grid.parquet` carries that prefix in its
+`sorting_variable` values so scripts 01–05 can address those columns. The prefix is
+an internal construction detail and must not leak into the published data: the
+factor-library return partitions and the `download_data(..., sorting_variable = "bm")`
+argument both use the bare name. `05_portfolio_sorts.R` already strips the prefix from
+the returns; `06_upload_to_huggingface.R` strips it from the grid before upload so the
+two published datasets agree (see
+[tidy-finance/r-tidyfinance#284](https://github.com/tidy-finance/r-tidyfinance/issues/284)).
 
 ## Data
 
