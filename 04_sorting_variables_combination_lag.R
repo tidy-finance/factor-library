@@ -39,7 +39,7 @@ sorting_variables_yearly <- sorting_variables_yearly |>
   select(
     gvkey,
     date,
-    book_equity = filter_book_equity,
+    be = filter_be,
     earnings = filter_earnings,
     starts_with("sv_")
   )
@@ -80,7 +80,7 @@ sv_lag3m <- crsp_monthly |>
     price,
     size,
     listing_age,
-    book_equity,
+    be,
     earnings,
     everything()
   )
@@ -123,7 +123,7 @@ sv_lag6m <- crsp_monthly |>
     price,
     size,
     listing_age,
-    book_equity,
+    be,
     earnings,
     everything()
   )
@@ -168,7 +168,7 @@ sv_lag_ff <- crsp_monthly |>
     price,
     size,
     listing_age,
-    book_equity,
+    be,
     earnings,
     everything()
   )

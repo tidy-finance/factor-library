@@ -281,7 +281,7 @@ sorting_variables_yearly <- compustat_annual |>
     ),
     sv_sm = sale / int_me,
     filter_earnings = ib,
-    filter_book_equity = be
+    filter_be = be
   )
 
 # Remove Inf, NaN, and sign-convention exclusions
