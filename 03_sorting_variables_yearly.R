@@ -280,7 +280,8 @@ sorting_variables_yearly <- compustat_annual |>
       oancf / int_me
     ),
     sv_sm = sale / int_me,
-    filter_earnings = ib
+    filter_earnings = ib,
+    filter_book_equity = be
   )
 
 # Remove Inf, NaN, and sign-convention exclusions
@@ -298,6 +299,6 @@ sorting_variables_yearly <- sorting_variables_yearly |>
   )
 
 sorting_variables_yearly <- sorting_variables_yearly |>
-  select(gvkey, date, filter_earnings, starts_with("sv_"))
+  select(gvkey, date, starts_with("filter_"), starts_with("sv_"))
 
 write_parquet(sorting_variables_yearly, "data/sorting_variables_yearly.parquet")
