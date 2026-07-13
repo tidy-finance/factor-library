@@ -10,6 +10,12 @@ options(future.globals.maxSize = Inf)
 options(parallelly.fork.enable = TRUE)
 plan(multicore, workers = n_workers)
 
+# filter_options() and breakpoint_options() expect NULL to disable an option;
+# the grid stores disabled options as NA, so translate on the way in.
+na_to_null <- function(x) {
+  if (length(x) == 1L && is.na(x)) NULL else x
+}
+
 sv_directions <- read_parquet("data/sorting_variable_information.parquet") |>
   transmute(sorting_variable = str_c("sv_", sorting_variable), direction)
 
@@ -32,18 +38,13 @@ process_task <- function(row, sorting_data, output_dir) {
 
         rebalancing_month <- if (row$rebalancing == "monthly") NULL else 7
         bp_exchanges <- strsplit(row$breakpoints_exchanges, split = "\\|")[[1]]
-        breakpoints_min_size_threshold = if (
-          !is.na(row$breakpoints_min_size_threshold)
-        ) {
-          row$breakpoints_min_size_threshold
-        } else {
-          NULL
-        }
 
         options_main <- breakpoint_options(
           n_portfolios = row$n_portfolios_main,
           breakpoints_exchanges = bp_exchanges,
-          breakpoints_min_size_threshold = breakpoints_min_size_threshold
+          breakpoints_min_size_threshold = na_to_null(
+            row$breakpoints_min_size_threshold
+          )
         )
 
         options_secondary <- NULL
@@ -67,21 +68,16 @@ process_task <- function(row, sorting_data, output_dir) {
             filter_options = filter_options(
               exclude_financials = row$exclude_financials,
               exclude_utilities = row$exclude_utilities,
+              exclude_negative_book_equity = row$exclude_negative_book_equity,
               exclude_negative_earnings = row$exclude_negative_earnings,
-              min_size_quantile = if (!is.na(row$min_size_quantile)) {
-                row$min_size_quantile
-              } else {
-                NULL
-              },
-              min_listing_age = 24
+              min_stock_price = na_to_null(row$min_stock_price),
+              min_size_quantile = na_to_null(row$min_size_quantile),
+              min_listing_age = na_to_null(row$min_listing_age)
             ),
             breakpoint_options_main = options_main,
             breakpoint_options_secondary = options_secondary
           ),
           min_portfolio_size = min_portfolio_size,
-          data_options = data_options(
-            earnings = "filter_earnings"
-          ),
           quiet = TRUE
         )
 
@@ -156,8 +152,10 @@ for (p in seq_along(unique_paths)) {
       ret_excess,
       exchange,
       siccd,
-      filter_earnings,
+      price,
       listing_age,
+      book_equity,
+      earnings,
       mktcap_lag,
       all_of(sv_cols_needed)
     ) |>
@@ -182,8 +180,10 @@ for (p in seq_along(unique_paths)) {
           "ret_excess",
           "exchange",
           "siccd",
-          "filter_earnings",
+          "price",
           "listing_age",
+          "book_equity",
+          "earnings",
           "mktcap_lag",
           row$sorting_variable
         ),

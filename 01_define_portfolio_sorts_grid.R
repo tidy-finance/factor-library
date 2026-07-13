@@ -73,7 +73,7 @@ full_grid <- expand_grid(
   ),
   min_size_quantile = c(NA, 0.2),
   min_stock_price = NA_real_,
-  min_listing_age = NA_integer_,
+  min_listing_age = 24L,
   exclude_financials = c(TRUE, FALSE),
   exclude_utilities = c(TRUE, FALSE),
   exclude_negative_book_equity = c(FALSE),
