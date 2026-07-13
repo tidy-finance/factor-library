@@ -89,16 +89,12 @@ crsp_monthly <- crsp_monthly |>
   rename(int_me_lag5y = int_me_lag)
 
 # Compute CAPM regression coefficients and FF3 residuals
-# NOTE: multisession needs to be initialized before using furrr for beta estimation
-future::plan(future::multisession, workers = future::availableCores() - 1)
-
 capm_betas <- crsp_monthly |>
   arrange(permno, date) |>
   estimate_betas(
     "ret_excess ~ mkt_excess",
     months(60),
-    min_obs = 24,
-    use_furrr = TRUE
+    min_obs = 24
   ) |>
   select(everything(), int_capm_beta = beta_mkt_excess, -intercept)
 
