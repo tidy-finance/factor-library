@@ -57,8 +57,6 @@ process_task <- function(row, sorting_data, output_dir) {
           )
         }
 
-        min_portfolio_size <- 1L
-
         portfolio_returns <- implement_portfolio_sort(
           sorting_data,
           sorting_variables = sorting_variables,
@@ -77,7 +75,6 @@ process_task <- function(row, sorting_data, output_dir) {
             breakpoint_options_main = options_main,
             breakpoint_options_secondary = options_secondary
           ),
-          min_portfolio_size = min_portfolio_size,
           quiet = TRUE
         )
 
@@ -154,7 +151,7 @@ for (p in seq_along(unique_paths)) {
       siccd,
       price,
       listing_age,
-      book_equity,
+      be,
       earnings,
       mktcap_lag,
       all_of(sv_cols_needed)
@@ -182,7 +179,7 @@ for (p in seq_along(unique_paths)) {
           "siccd",
           "price",
           "listing_age",
-          "book_equity",
+          "be",
           "earnings",
           "mktcap_lag",
           row$sorting_variable
