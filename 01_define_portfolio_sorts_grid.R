@@ -3,6 +3,10 @@ library("tidyr")
 library("tibble")
 library("arrow")
 
+if (!dir.exists("data")) {
+  dir.create("data")
+}
+
 sorting_variable_information <- tribble(
   ~sorting_variable , ~full_name                                , ~direction         ,
   "mom"             , "Momentum"                                , "top_minus_bottom" ,
@@ -68,8 +72,11 @@ full_grid <- expand_grid(
     unique(sorting_variable_information$sorting_variable)
   ),
   min_size_quantile = c(NA, 0.2),
+  min_stock_price = NA_real_,
+  min_listing_age = NA_integer_,
   exclude_financials = c(TRUE, FALSE),
   exclude_utilities = c(TRUE, FALSE),
+  exclude_negative_book_equity = c(FALSE),
   exclude_negative_earnings = c(TRUE, FALSE),
   sorting_variable_lag = c("3m", "6m", "ff"),
   rebalancing = c("monthly", "annual"),
