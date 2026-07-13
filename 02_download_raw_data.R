@@ -7,7 +7,7 @@ date_start <- as.Date("1960-01-01")
 date_end <- as.Date("2024-12-31")
 
 download_data(
-  domain = "factors_ff",
+  domain = "Fama-French",
   dataset = "Fama/French 5 Factors (2x3)",
   start_date = date_start,
   end_date = date_end
@@ -15,7 +15,7 @@ download_data(
   write_parquet("data/factors_ff_5_monthly.parquet")
 
 download_data(
-  domain = "factors_ff",
+  domain = "Fama-French",
   dataset = "Fama/French 5 Factors (2x3) [Daily]",
   start_date = date_start,
   end_date = date_end
@@ -23,7 +23,7 @@ download_data(
   write_parquet("data/factors_ff_5_daily.parquet")
 
 crsp_monthly <- download_data(
-  domain = "wrds",
+  domain = "WRDS",
   dataset = "crsp_monthly",
   version = "v2",
   start_date = date_start,
@@ -35,7 +35,7 @@ crsp_monthly |>
   write_parquet("data/crsp_monthly.parquet")
 
 download_data(
-  domain = "wrds",
+  domain = "WRDS",
   dataset = "crsp_daily",
   version = "v2",
   start_date = date_start,
@@ -52,7 +52,7 @@ download_data(
   write_parquet("data/crsp_daily.parquet")
 
 compustat_annual <- download_data(
-  domain = "wrds",
+  domain = "WRDS",
   dataset = "compustat_annual",
   start_date = date_start,
   end_date = date_end,
@@ -129,7 +129,7 @@ compustat_annual <- compustat_annual |>
 write_parquet(compustat_annual, "data/compustat_annual.parquet")
 
 compustat_quarterly <- download_data(
-  domain = "wrds",
+  domain = "WRDS",
   dataset = "compustat_quarterly",
   start_date = date_start,
   end_date = date_end,
