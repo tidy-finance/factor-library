@@ -22,8 +22,11 @@ crsp_monthly <- open_dataset("data/crsp_monthly.parquet") |>
     date,
     ret_excess,
     exchange,
+    industry,
     siccd,
     mktcap_lag,
+    size = mktcap,
+    price = prc,
     listing_age
   ) |>
   collect()
@@ -33,7 +36,13 @@ sorting_variables_monthly <- sorting_variables_monthly |>
 
 # Bundle filter_earnings with sv_* so both travel through the same join_lagged_values call.
 sorting_variables_yearly <- sorting_variables_yearly |>
-  select(gvkey, date, filter_earnings, starts_with("sv_"))
+  select(
+    gvkey,
+    date,
+    book_equity = filter_book_equity,
+    earnings = filter_earnings,
+    starts_with("sv_")
+  )
 
 # Lag 3m ------------------------------------------------------------------
 # Exactly lag by three months
@@ -58,6 +67,22 @@ sv_lag3m <- crsp_monthly |>
     "gvkey",
     min_lag = months(3),
     max_lag = months(15)
+  ) |>
+  select(
+    gvkey,
+    permno,
+    date,
+    ret_excess,
+    exchange,
+    siccd,
+    industry,
+    mktcap_lag,
+    price,
+    size,
+    listing_age,
+    book_equity,
+    earnings,
+    everything()
   )
 
 write_parquet(sv_lag3m, "data/sorting_variables_lag_3m.parquet")
@@ -85,6 +110,22 @@ sv_lag6m <- crsp_monthly |>
     "gvkey",
     min_lag = months(6),
     max_lag = months(18)
+  ) |>
+  select(
+    gvkey,
+    permno,
+    date,
+    ret_excess,
+    exchange,
+    siccd,
+    industry,
+    mktcap_lag,
+    price,
+    size,
+    listing_age,
+    book_equity,
+    earnings,
+    everything()
   )
 
 write_parquet(sv_lag6m, "data/sorting_variables_lag_6m.parquet")
@@ -114,6 +155,22 @@ sv_lag_ff <- crsp_monthly |>
     min_lag = months(7),
     max_lag = months(18),
     ff_adjustment = TRUE
+  ) |>
+  select(
+    gvkey,
+    permno,
+    date,
+    ret_excess,
+    exchange,
+    siccd,
+    industry,
+    mktcap_lag,
+    price,
+    size,
+    listing_age,
+    book_equity,
+    earnings,
+    everything()
   )
 
 write_parquet(sv_lag_ff, "data/sorting_variables_lag_ff.parquet")
