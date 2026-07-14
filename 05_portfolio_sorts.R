@@ -3,8 +3,32 @@ library("arrow")
 library("mirai")
 library("mori")
 
+# Peak RAM is roughly shared_table_gb + n_workers * per_task_gb
+# because each concurrent task materialises its slice of the ~3.5M-row panel
+# out of shared memory while sorting (the shared input table itself is a single
+# zero-copy region, not duplicated per worker).
+per_task_gb <- 2.5
+shared_table_gb <- 2
+memory_budget_gb <- 100
+budget_workers <- max(
+  1L,
+  as.integer((memory_budget_gb - shared_table_gb) %/% per_task_gb)
+)
+
 n_cores <- parallel::detectCores()
-n_workers <- if (is.na(n_cores)) 1L else max(1L, n_cores - 1L)
+n_available <- if (is.na(n_cores)) 1L else max(1L, n_cores - 1L)
+n_workers <- min(n_available, budget_workers)
+
+message(sprintf(
+  "Using %d worker daemon(s) of %d available%s.",
+  n_workers,
+  n_available,
+  if (!is.na(memory_budget_gb)) {
+    sprintf(" (%.0f GB budget)", memory_budget_gb)
+  } else {
+    ""
+  }
+))
 
 # Persistent background daemons process the tasks. Each large sorting-data
 # table is written to shared memory once (via mori::share()) and mapped
@@ -185,7 +209,11 @@ for (p in seq_along(unique_paths)) {
   # Place the table in shared memory once. The ALTREP handle travels through
   # mirai_map()'s .args and is mapped zero-copy by each daemon; keep the
   # reference alive until the results have been collected below.
+  # share() copies into shared memory, so the collected heap copy is now
+  # redundant (~2 GB) — drop it so only the shared region stays resident.
   shared_data <- share(sv_lag_data)
+  rm(sv_lag_data)
+  gc(verbose = FALSE)
 
   output_dirs <- file.path(
     "data",
@@ -215,6 +243,12 @@ for (p in seq_along(unique_paths)) {
   )[.progress]
 
   all_diagnostics[[p]] <- bind_rows(results)
+
+  # Release this lag file's shared region before loading the next one, so the
+  # three iterations don't accumulate shared segments.
+  rm(shared_data)
+  prune_shared()
+  gc(verbose = FALSE)
 
   message(
     sprintf(
