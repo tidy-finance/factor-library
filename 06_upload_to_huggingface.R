@@ -1,6 +1,5 @@
 library("arrow")
 library("dplyr")
-library("stringr")
 library("fs")
 
 # This script publishes the factor library to Hugging Face. It does two things:
@@ -38,7 +37,7 @@ published_grid <- file.path(publish_dir, "portfolio_sort_grid.parquet")
 dir_create(publish_dir)
 
 read_parquet(construction_grid) |>
-  mutate(sorting_variable = str_remove(sorting_variable, "^sv_")) |>
+  mutate(sorting_variable = sub("^sv_", "", sorting_variable)) |>
   write_parquet(published_grid)
 
 message("Wrote stripped grid to ", published_grid)

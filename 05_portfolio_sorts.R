@@ -1,14 +1,15 @@
 library("dplyr")
 library("arrow")
-library("tidyr")
-library("stringr")
-library("tidyfinance")
-library("future.apply")
+library("mirai")
+library("mori")
 
-n_workers <- max(1L, availableCores() - 1L)
-options(future.globals.maxSize = Inf)
-options(parallelly.fork.enable = TRUE)
-plan(multicore, workers = n_workers)
+n_cores <- parallel::detectCores()
+n_workers <- if (is.na(n_cores)) 1L else max(1L, n_cores - 1L)
+
+# Persistent background daemons process the tasks. Each large sorting-data
+# table is written to shared memory once (via mori::share()) and mapped
+# zero-copy into every daemon, instead of being copied per worker.
+daemons(n_workers)
 
 # filter_options() and breakpoint_options() expect NULL to disable an option;
 # the grid stores disabled options as NA, so translate on the way in.
@@ -17,7 +18,7 @@ na_to_null <- function(x) {
 }
 
 sv_directions <- read_parquet("data/sorting_variable_information.parquet") |>
-  transmute(sorting_variable = str_c("sv_", sorting_variable), direction)
+  transmute(sorting_variable = paste0("sv_", sorting_variable), direction)
 
 grid <- read_parquet("data/portfolio_sort_grid.parquet") |>
   inner_join(sv_directions, join_by(sorting_variable)) |>
@@ -36,7 +37,7 @@ process_task <- function(row, sorting_data, output_dir) {
       {
         sorting_variables <- grep("sv_", names(sorting_data), value = TRUE)
 
-        rebalancing_month <- if (row$rebalancing == "monthly") NULL else 7
+        rebalancing_month <- if (row$rebalancing == "monthly") NULL else 7L
         bp_exchanges <- strsplit(row$breakpoints_exchanges, split = "\\|")[[1]]
 
         options_main <- breakpoint_options(
@@ -75,6 +76,11 @@ process_task <- function(row, sorting_data, output_dir) {
             breakpoint_options_main = options_main,
             breakpoint_options_secondary = options_secondary
           ),
+          # data_options is a top-level argument of implement_portfolio_sort(),
+          # not part of portfolio_sort_options() (whose ... would silently drop
+          # it). The panel names earnings/price columns differently from the
+          # tidyfinance defaults (ib / prc_adj), so remap both.
+          data_options = data_options(price = "price", earnings = "earnings"),
           quiet = TRUE
         )
 
@@ -82,7 +88,7 @@ process_task <- function(row, sorting_data, output_dir) {
           compute_long_short_returns(direction = row$direction) |>
           pivot_longer(-date, names_to = "ret_type", values_to = "ret") |>
           mutate(
-            ret_type = str_remove(ret_type, "ret_excess_"),
+            ret_type = sub("ret_excess_", "", ret_type),
             id = row$id + match(ret_type, c("ew", "vw", "vw_capped")) - 1L,
             sorting_variable = row$sorting_variable,
             ret = replace_na(ret, 0)
@@ -122,13 +128,43 @@ process_task <- function(row, sorting_data, output_dir) {
   }
 }
 
+# Load the worker-side packages and helper functions once on every daemon.
+# Objects passed via ... persist in each daemon's global environment, so
+# subsequent mirai_map() calls can reference them directly.
+everywhere(
+  {
+    library("dplyr")
+    library("arrow")
+    library("tidyr")
+    library("tidyfinance")
+    library("mori")
+  },
+  na_to_null = na_to_null,
+  process_task = process_task
+)
+
+fixed_cols <- c(
+  "permno",
+  "date",
+  "ret_excess",
+  "exchange",
+  "siccd",
+  "price",
+  "listing_age",
+  "be",
+  "earnings",
+  "mktcap_lag"
+)
+
 unique_paths <- unique(grid$parquet_path)
 all_diagnostics <- vector("list", length(unique_paths))
 
 for (p in seq_along(unique_paths)) {
   path <- unique_paths[p]
   group_grid <- grid[grid$parquet_path == path, ]
-  group_grid <- group_grid |> filter(weighting_scheme == "EW") # Avoid redundant computations for VW and VW_CAPPED since they use the same breakpoints
+  # Avoid redundant computations for VW and VW_CAPPED since they use the same breakpoints
+  group_grid <- group_grid |>
+    filter(weighting_scheme == "EW")
 
   sv_cols_needed <- unique(group_grid$sorting_variable)
 
@@ -143,20 +179,13 @@ for (p in seq_along(unique_paths)) {
   )
 
   sv_lag_data <- open_dataset(path) |>
-    select(
-      permno,
-      date,
-      ret_excess,
-      exchange,
-      siccd,
-      price,
-      listing_age,
-      be,
-      earnings,
-      mktcap_lag,
-      all_of(sv_cols_needed)
-    ) |>
+    select(all_of(c(fixed_cols, sv_cols_needed))) |>
     collect()
+
+  # Place the table in shared memory once. The ALTREP handle travels through
+  # mirai_map()'s .args and is mapped zero-copy by each daemon; keep the
+  # reference alive until the results have been collected below.
+  shared_data <- share(sv_lag_data)
 
   output_dirs <- file.path(
     "data",
@@ -165,33 +194,25 @@ for (p in seq_along(unique_paths)) {
     paste0("sorting_variable_lag=", group_grid$sorting_variable_lag)
   )
 
-  results <- future_lapply(
+  results <- mirai_map(
     seq_len(nrow(group_grid)),
-    function(i) {
+    function(i, group_grid, shared_data, output_dirs, fixed_cols) {
       row <- group_grid[i, ]
 
-      task_data <- sv_lag_data[,
-        c(
-          "permno",
-          "date",
-          "ret_excess",
-          "exchange",
-          "siccd",
-          "price",
-          "listing_age",
-          "be",
-          "earnings",
-          "mktcap_lag",
-          row$sorting_variable
-        ),
+      task_data <- shared_data[,
+        c(fixed_cols, row$sorting_variable),
         drop = FALSE
       ]
 
       process_task(row, task_data, output_dirs[i])
     },
-    future.seed = TRUE,
-    future.chunk.size = max(1L, nrow(group_grid) %/% (n_workers * 4L))
-  )
+    .args = list(
+      group_grid = group_grid,
+      shared_data = shared_data,
+      output_dirs = output_dirs,
+      fixed_cols = fixed_cols
+    )
+  )[.progress]
 
   all_diagnostics[[p]] <- bind_rows(results)
 
@@ -205,7 +226,7 @@ for (p in seq_along(unique_paths)) {
   )
 }
 
-plan(sequential)
+daemons(0L)
 diagnostics <- bind_rows(all_diagnostics)
 write_parquet(diagnostics, "data/task_diagnostics.parquet")
 message("All done! ", nrow(diagnostics), " tasks processed.")
@@ -214,7 +235,7 @@ message("All done! ", nrow(diagnostics), " tasks processed.")
 
 temporary_folder <- "data/portfolio_returns_new"
 open_dataset("data/portfolio_returns/") |>
-  mutate(sorting_variable = str_remove(sorting_variable, "^sv_")) |>
+  mutate(sorting_variable = sub("^sv_", "", sorting_variable)) |>
   left_join(
     grid |> select(id, sorting_method, n_portfolios_main),
     join_by(id)
