@@ -215,39 +215,46 @@ for (p in seq_along(unique_paths)) {
   rm(sv_lag_data)
   gc(verbose = FALSE)
 
-  output_dirs <- file.path(
-    "data",
-    "portfolio_returns",
-    paste0("sorting_variable=", group_grid$sorting_variable),
-    paste0("sorting_variable_lag=", group_grid$sorting_variable_lag)
-  )
+  # mirai_map() serialises .args into *every* task it queues, so nothing sized
+  # like the grid may go there: passing the whole group_grid cost ~25 MB per
+  # task x 93k tasks and exhausted RAM in this process before a single worker
+  # started. .args now holds only the shared-memory handle (~30 bytes) and
+  # fixed_cols, while each chunk's rows travel as its element of .x. Chunking by
+  # sorting variable also lets a chunk slice its column out of shared memory
+  # once and reuse it across all ~1900 of its rows.
+  group_chunks <- split(group_grid, group_grid$sorting_variable)
 
   results <- mirai_map(
-    seq_len(nrow(group_grid)),
-    function(i, group_grid, shared_data, output_dirs, fixed_cols) {
-      row <- group_grid[i, ]
-
+    group_chunks,
+    function(chunk, shared_data, fixed_cols) {
       task_data <- shared_data[,
-        c(fixed_cols, row$sorting_variable),
+        c(fixed_cols, chunk$sorting_variable[1]),
         drop = FALSE
       ]
 
-      process_task(row, task_data, output_dirs[i])
+      output_dirs <- file.path(
+        "data",
+        "portfolio_returns",
+        paste0("sorting_variable=", chunk$sorting_variable),
+        paste0("sorting_variable_lag=", chunk$sorting_variable_lag)
+      )
+
+      bind_rows(lapply(
+        seq_len(nrow(chunk)),
+        function(i) process_task(chunk[i, ], task_data, output_dirs[i])
+      ))
     },
     .args = list(
-      group_grid = group_grid,
       shared_data = shared_data,
-      output_dirs = output_dirs,
       fixed_cols = fixed_cols
     )
   )[.progress]
 
   all_diagnostics[[p]] <- bind_rows(results)
 
-  # Release this lag file's shared region before loading the next one, so the
-  # three iterations don't accumulate shared segments.
+  # Drop the last reference to this lag file's shared region so it is freed
+  # before the next one is loaded, instead of accumulating across iterations.
   rm(shared_data)
-  prune_shared()
   gc(verbose = FALSE)
 
   message(
