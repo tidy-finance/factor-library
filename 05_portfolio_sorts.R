@@ -6,17 +6,28 @@ library("mori")
 # Peak RAM is roughly shared_table_gb + n_workers * per_task_gb
 # because each concurrent task materialises its slice of the ~3.5M-row panel
 # out of shared memory while sorting (the shared input table itself is a single
-# zero-copy region, not duplicated per worker).
-per_task_gb <- 2.5
+# zero-copy region, not duplicated per worker: five concurrent workers over one
+# shared panel cost ~1.5 GB in total, not five times that).
+# per_task_gb is measured: a worker running real sorts plateaus ~2.7 GB above
+# idle and peaks near 3.0 GB, so anything lower silently overcommits.
+per_task_gb <- 3
 shared_table_gb <- 2
+
+# Set to NA to ignore the memory budget and be limited only by cores.
 memory_budget_gb <- 100
-budget_workers <- max(
-  1L,
-  as.integer((memory_budget_gb - shared_table_gb) %/% per_task_gb)
-)
 
 n_cores <- parallel::detectCores()
 n_available <- if (is.na(n_cores)) 1L else max(1L, n_cores - 1L)
+
+budget_workers <- if (is.na(memory_budget_gb)) {
+  n_available
+} else {
+  max(
+    1L,
+    as.integer((memory_budget_gb - shared_table_gb) %/% per_task_gb)
+  )
+}
+
 n_workers <- min(n_available, budget_workers)
 
 message(sprintf(
