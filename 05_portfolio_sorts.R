@@ -3,26 +3,11 @@ library("arrow")
 library("mirai")
 library("mori")
 
-# Peak RAM is roughly shared_table_gb + n_workers * per_task_gb
-# because each concurrent task materialises its slice of the ~3.5M-row panel
-# out of shared memory while sorting (a shared input table is a single zero-copy
-# region, not duplicated per worker: five concurrent workers over one shared
-# panel cost ~1.5 GB in total, not five times that).
-# per_task_gb is measured: a worker running real sorts plateaus ~2.7 GB above
-# idle and peaks near 3.0 GB, so anything lower silently overcommits.
-# Exactly one lag file is resident at a time (see the per-file loop below), so
-# shared_table_gb covers a single ~2 GB region.
+# Each worker serializes the ~2GB of input data, so memory requirements
+# are at least n_cores * shared_table_gb + overhead ()
 per_task_gb <- 3
 shared_table_gb <- 2
-
-# The parent process is not free: while loading a lag file it holds the freshly
-# collect()ed panel *and* the share()d copy at the same time (~3.5 GB peak) plus
-# the grid and R's own overhead. That peak no longer overlaps with any worker —
-# daemons start after the load and stop before the next one — but the parent's
-# steady-state footprint still has to fit alongside them.
 parent_reserve_gb <- 6
-
-# Set to NA to ignore the memory budget and be limited only by cores.
 memory_budget_gb <- 100
 
 n_cores <- parallel::detectCores()
@@ -38,7 +23,6 @@ budget_workers <- if (is.na(memory_budget_gb)) {
     )
   )
 }
-
 n_workers <- min(n_available, budget_workers)
 
 message(sprintf(
@@ -51,11 +35,6 @@ message(sprintf(
     ""
   }
 ))
-
-# Daemons are started and stopped once per lag file (see the loop at the bottom)
-# rather than once for the whole run. Long-lived daemons accumulate heap across
-# thousands of tasks and never give it back to the OS; a fresh daemon pool per
-# file bounds that growth to one file's worth of work.
 
 # filter_options() and breakpoint_options() expect NULL to disable an option;
 # the grid stores disabled options as NA, so translate on the way in.
@@ -122,10 +101,6 @@ process_task <- function(row, sorting_data, output_dir) {
             breakpoint_options_main = options_main,
             breakpoint_options_secondary = options_secondary
           ),
-          # data_options is a top-level argument of implement_portfolio_sort(),
-          # not part of portfolio_sort_options() (whose ... would silently drop
-          # it). The panel names earnings/price columns differently from the
-          # tidyfinance defaults (ib / prc_adj), so remap both.
           data_options = data_options(price = "price", earnings = "earnings"),
           quiet = TRUE
         )
@@ -190,19 +165,12 @@ fixed_cols <- c(
 unique_paths <- unique(grid$parquet_path)
 
 # Avoid redundant computations for VW and VW_CAPPED since they use the same
-# breakpoints as EW.
+# breakpoints as EW and are implemented by implement_portfolio_sorts() anyway.
+# We can save 2/3 of all calculations by just computing the results once and
+# expanding the ouputs to all three relevant rows.
 grid_ew <- grid |>
   filter(weighting_scheme == "EW")
 
-# Each lag file is handled as a fully self-contained cycle: load it, start a
-# fresh daemon pool, run only that file's tasks, stop every daemon, drop the
-# shared region, gc. Nothing from one file survives into the next, so heap that
-# the previous file's daemons never returned to the OS dies with the daemons
-# instead of accumulating over the whole run.
-#
-# Diagnostics are written per file rather than once at the end, so a run that
-# dies partway still leaves the completed files' results on disk — and the
-# resume check below then skips them.
 diagnostics_dir <- "data/task_diagnostics"
 dir.create(diagnostics_dir, recursive = TRUE, showWarnings = FALSE)
 
@@ -229,19 +197,12 @@ for (path in unique_paths) {
     select(all_of(c(fixed_cols, sv_cols_needed))) |>
     collect()
 
-  # share() copies into shared memory, so drop the collected heap copy (~2 GB)
-  # immediately — only the shared region needs to stay resident.
   shared_data <- share(sv_lag_data)
   rm(sv_lag_data)
   gc(verbose = FALSE)
 
-  # Daemons are started only now, after the parent has finished its peak-memory
-  # load-and-share step, so the two peaks never overlap.
   daemons(n_workers)
 
-  # Load the worker-side packages and helper functions on every daemon. Objects
-  # passed via ... persist in each daemon's global environment, so the
-  # mirai_map() below can reference them directly.
   everywhere(
     {
       library("dplyr")
@@ -254,7 +215,6 @@ for (path in unique_paths) {
     process_task = process_task
   )
 
-  # One task per sorting variable within this file (~50 tasks).
   group_chunks <- split(grid_file, grid_file$sorting_variable, drop = TRUE)
 
   message(sprintf(
@@ -266,11 +226,6 @@ for (path in unique_paths) {
     n_workers
   ))
 
-  # mirai_map() serialises .args into *every* task it queues, so nothing sized
-  # like the grid may go there. shared_data serialises to its ~30-byte name, not
-  # its contents; each chunk's rows travel as its element of .x. A chunk carries
-  # a single sorting variable, so it slices that column out of shared memory
-  # once and reuses it across all ~1900 of its rows.
   results <- mirai_map(
     group_chunks,
     function(chunk, shared_data, fixed_cols) {
@@ -291,9 +246,6 @@ for (path in unique_paths) {
         function(i) process_task(chunk[i, ], task_data, output_dirs[i])
       ))
 
-      # Hand the slice's pages back before the daemon picks up its next chunk,
-      # so a daemon's footprint tracks one chunk rather than every chunk it has
-      # ever run.
       rm(task_data)
       gc(verbose = FALSE)
       out
@@ -307,9 +259,6 @@ for (path in unique_paths) {
   diagnostics_file <- bind_rows(results)
   write_parquet(diagnostics_file, diagnostics_path)
 
-  # Stop every daemon before the next file is loaded. This is the point of the
-  # whole loop: the daemon processes exit, so all of their heap goes back to the
-  # OS unconditionally, whatever the R allocator would have held on to.
   daemons(0L)
 
   rm(results, diagnostics_file, group_chunks, grid_file, shared_data)
