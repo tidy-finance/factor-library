@@ -19,9 +19,7 @@ lag_conventions <- list(
   "ff" = list(min_lag = months(7), max_lag = months(18), ff_adjustment = TRUE)
 )
 
-# Only the OSAP-native 1m convention is built for now; loop over
-# names(lag_conventions) for the full set
-for (lag_label in "1m") {
+for (lag_label in names(lag_conventions)) {
   convention <- lag_conventions[[lag_label]]
 
   sv_lag <- crsp_monthly |>
