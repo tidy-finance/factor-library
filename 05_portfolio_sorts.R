@@ -3,38 +3,14 @@ library("arrow")
 library("mirai")
 library("mori")
 
-# Each worker serializes the ~2GB of input data, so memory requirements
-# are at least n_cores * shared_table_gb + overhead ()
-per_task_gb <- 3
-shared_table_gb <- 2
-parent_reserve_gb <- 6
-memory_budget_gb <- 100
+# For memory constrained settings: 30 daemons stay at around 90 GB of memory
+# because each worker serializes the ~2.5GB of input data for calculation and
+# there is some overhead.
+# Also note that the number of sorting variables caps how many actually run
+# concurrently because workers are reset after each sorting variable lag file.
+n_workers <- 30L
 
-n_cores <- parallel::detectCores()
-n_available <- if (is.na(n_cores)) 1L else max(1L, n_cores - 1L)
-
-budget_workers <- if (is.na(memory_budget_gb)) {
-  n_available
-} else {
-  max(
-    1L,
-    as.integer(
-      (memory_budget_gb - shared_table_gb - parent_reserve_gb) %/% per_task_gb
-    )
-  )
-}
-n_workers <- min(n_available, budget_workers)
-
-message(sprintf(
-  "Using %d worker daemon(s) of %d available%s.",
-  n_workers,
-  n_available,
-  if (!is.na(memory_budget_gb)) {
-    sprintf(" (%.0f GB budget)", memory_budget_gb)
-  } else {
-    ""
-  }
-))
+message(sprintf("Using %d worker daemon(s).", n_workers))
 
 # filter_options() and breakpoint_options() expect NULL to disable an option;
 # the grid stores disabled options as NA, so translate on the way in.
