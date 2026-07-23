@@ -1,6 +1,5 @@
 library("dplyr")
 library("tidyr")
-library("tibble")
 library("readr")
 library("lubridate")
 library("arrow")
@@ -41,7 +40,7 @@ crsp_monthly |>
   write_parquet("data/crsp_monthly.parquet")
 
 # Compustat is only needed for the negative-book-equity and negative-earnings
-# filters; all sorting variables come from OSAP
+# filters
 download_data(
   domain = "WRDS",
   dataset = "compustat_annual",
@@ -56,97 +55,41 @@ download_data(
 
 # OSAP characteristics -----------------------------------------------------
 
-id_wide_zip <- as_id("1ETUr7dwJvF8TCiS3hBDEqlrG36pvhKME")
-id_release <- as_id("1EP6oEabyZRamveGNyzYU0u6qJ-N43Qfq")
 temp_path <- "temp"
 dir.create(temp_path, showWarnings = FALSE)
-csv_path <- file.path(temp_path, "signed_predictors_dl_wide.csv")
+zip_path <- file.path(temp_path, "signed_predictors_dl_wide.zip")
 signal_doc_path <- file.path(temp_path, "SignalDoc.csv")
 
 drive_auth()
+drive_download(
+  as_id("1ETUr7dwJvF8TCiS3hBDEqlrG36pvhKME"),
+  path = zip_path,
+  overwrite = TRUE
+)
+csv_path <- unzip(zip_path, exdir = temp_path)
 
-if (!file.exists(csv_path)) {
-  zip_path <- file.path(temp_path, "signed_predictors_dl_wide.zip")
-
-  if (!file.exists(zip_path) || file.size(zip_path) < 1e6) {
-    drive_download(id_wide_zip, path = zip_path, overwrite = TRUE)
-  }
-
-  csv_path <- unzip(zip_path, exdir = temp_path)
-}
-
-if (!file.exists(signal_doc_path)) {
-  drive_ls(id_release) |>
-    filter(name == "SignalDoc.csv") |>
-    drive_download(path = signal_doc_path, overwrite = TRUE)
-}
-
-signal_doc <- read_csv(signal_doc_path, show_col_types = FALSE)
+drive_download(
+  as_id("1EReSLb0gwUNv_7m82hoPk6AUlHnud4-s"),
+  path = signal_doc_path,
+  overwrite = TRUE
+)
 
 # Quantile sorts are only meaningful for continuous signals
-continuous_acronyms <- signal_doc |>
-  filter(Cat.Signal == "Predictor", Cat.Form == "continuous") |>
-  pull(Acronym)
-
-# Declare the schema: inference types early-empty columns (e.g. Activism1) as
-# null and permno as int64, both of which break the join with crsp_monthly.
-# Column names come from the header because they differ across OSAP releases.
-header <- strsplit(readLines(csv_path, n = 1L), ",")[[1]]
-osap_schema <- do.call(
-  schema,
-  setNames(
-    lapply(header, \(x) if (x == "yyyymm") int32() else float64()),
-    header
-  )
-)
-
-signal_cols <- intersect(
-  setdiff(header, c("permno", "yyyymm")),
-  continuous_acronyms
-)
-stopifnot(anyDuplicated(tolower(signal_cols)) == 0)
-
-# Values older than the largest max_lag in 03 are never joined to the panel
-osap_date_start <- date_start - months(18)
-
-osap_raw <- open_csv_dataset(csv_path, schema = osap_schema, skip = 1) |>
-  mutate(date = make_date(yyyymm %/% 100L, yyyymm %% 100L, 1L)) |>
-  filter(date >= osap_date_start) |>
-  select(
-    permno,
-    date,
-    all_of(setNames(signal_cols, paste0("sv_", tolower(signal_cols))))
-  )
-
-# OSAP adds these three CRSP-based signals on top of the wide file; sign them
-# like the signed predictors
-crsp_signals <- crsp_monthly |>
-  transmute(
-    permno,
-    date,
-    sv_streversal = -replace_na(ret, 0),
-    sv_price = -log(if_else(abs(prc) > 0, abs(prc), NA_real_)),
-    sv_size = -log(if_else(mktcap > 0, mktcap, NA_real_))
-  )
-
-osap_raw |>
-  full_join(crsp_signals, by = c("permno", "date")) |>
-  write_parquet("data/sorting_variables_osap.parquet")
-
-unlink(temp_path, recursive = TRUE)
-
-# The wide file is signed (higher value = higher expected return), so every
-# signal sorts top minus bottom
-sorting_variable_information <- tibble(
-  acronym = c(signal_cols, "STreversal", "Price", "Size")
+sorting_variable_information <- read_csv(
+  signal_doc_path,
+  show_col_types = FALSE
 ) |>
-  left_join(
-    signal_doc |> select(Acronym, LongDescription),
-    join_by(acronym == Acronym)
-  ) |>
+  filter(Cat.Signal == "Predictor", Cat.Form == "continuous")
+
+signal_cols <- setdiff(
+  sorting_variable_information$Acronym,
+  c("STreversal", "Price", "Size")
+)
+
+sorting_variable_information <- sorting_variable_information |>
   transmute(
-    sorting_variable = tolower(acronym),
-    full_name = coalesce(LongDescription, acronym),
+    sorting_variable = tolower(Acronym),
+    full_name = LongDescription,
     direction = "top_minus_bottom"
   ) |>
   arrange(sorting_variable)
@@ -155,3 +98,32 @@ write_parquet(
   sorting_variable_information,
   "data/sorting_variable_information.parquet"
 )
+
+osap_raw <- open_csv_dataset(
+  csv_path,
+  col_types = schema(sapply(c("permno", "yyyymm", signal_cols), \(x) float64()))
+) |>
+  mutate(date = make_date(yyyymm %/% 100L, yyyymm %% 100L, 1L)) |>
+  filter(date >= date_start) |>
+  select(
+    permno,
+    date,
+    all_of(setNames(signal_cols, paste0("sv_", tolower(signal_cols))))
+  )
+
+# Sign the CRSP-based signals like the signed predictors (higher value =
+# higher expected return)
+crsp_signals <- crsp_monthly |>
+  transmute(
+    permno,
+    date,
+    sv_streversal = -replace_na(ret, 0),
+    sv_price = -prc,
+    sv_size = -mktcap
+  )
+
+osap_raw |>
+  full_join(crsp_signals, by = c("permno", "date")) |>
+  write_parquet("data/sorting_variables_osap.parquet")
+
+unlink(temp_path, recursive = TRUE)
