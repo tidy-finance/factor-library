@@ -3,9 +3,9 @@ library("arrow")
 library("mirai")
 library("mori")
 
-# For memory constrained settings: 30 daemons stay at around 90 GB of memory
-# because each worker serializes the ~2.5GB of input data for calculation and
-# there is some overhead.
+# Input data is shared via mori, so transfer to workers is free; per-worker
+# memory is bounded by private copies of the columns a task actually touches
+# (~12 of the ~190 shared columns) plus transient sort allocations.
 # Also note that the number of sorting variables caps how many actually run
 # concurrently because workers are reset after each sorting variable lag file.
 n_workers <- 30L
@@ -222,7 +222,10 @@ for (path in unique_paths) {
         function(i) process_task(chunk[i, ], task_data, output_dirs[i])
       ))
 
-      rm(task_data)
+      # shared_data holds the private materialization caches of the touched
+      # columns; drop its binding too so this gc frees them before the task
+      # returns instead of at some later gc during the next task.
+      rm(task_data, shared_data)
       gc(verbose = FALSE)
       out
     },
