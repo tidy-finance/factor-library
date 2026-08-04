@@ -6,8 +6,6 @@ library("mori")
 # Input data is shared via mori, so transfer to workers is free; per-worker
 # memory is bounded by private copies of the columns a task actually touches
 # (~12 of the ~190 shared columns) plus transient sort allocations.
-# Also note that the number of sorting variables caps how many actually run
-# concurrently because workers are reset after each sorting variable lag file.
 n_workers <- 30L
 
 message(sprintf("Using %d worker daemon(s).", n_workers))
@@ -191,7 +189,19 @@ for (path in unique_paths) {
     process_task = process_task
   )
 
-  group_chunks <- split(grid_file, grid_file$sorting_variable, drop = TRUE)
+  # One task per sorting variable is far too coarse: 179 tasks of 1920 sorts
+  # each means the map ends on a few multi-hour stragglers while the rest of the
+  # pool idles, and daemons beyond 179 never get work. Sub-divide so tasks
+  # outnumber daemons ~20:1; each chunk still holds exactly one sorting
+  # variable, so the materialized column set per task is unchanged.
+  rows_per_task <- max(1L, ceiling(nrow(grid_file) / (n_workers * 20L)))
+
+  group_chunks <- grid_file |>
+    mutate(
+      chunk_index = (row_number() - 1L) %/% rows_per_task,
+      .by = sorting_variable
+    ) |>
+    group_split(sorting_variable, chunk_index)
 
   message(sprintf(
     "[%s] Processing %d tasks (%d sorts) from %s with %d daemon(s)...",
@@ -202,7 +212,7 @@ for (path in unique_paths) {
     n_workers
   ))
 
-  results <- mirai_map(
+  map <- mirai_map(
     group_chunks,
     function(chunk, shared_data, fixed_cols) {
       task_data <- shared_data[,
@@ -233,14 +243,36 @@ for (path in unique_paths) {
       shared_data = shared_data,
       fixed_cols = fixed_cols
     )
-  )[.progress]
+  )
+
+  # [.progress] collects strictly in order, so it reports the length of the
+  # finished prefix rather than the number of finished tasks: one slow task
+  # early in the order pins it near 0% while everything behind it has already
+  # completed. Count resolved tasks directly, and log how many daemons are still
+  # executing so a thinning tail shows up in the log while it happens.
+  n_tasks <- length(map)
+  repeat {
+    n_done <- sum(vapply(map, function(x) !unresolved(x), logical(1)))
+    message(sprintf(
+      "[%s] %d/%d tasks done (%.1f%%), %d daemon(s) executing.",
+      Sys.time(),
+      n_done,
+      n_tasks,
+      100 * n_done / n_tasks,
+      status()$mirai[["executing"]]
+    ))
+    if (n_done == n_tasks) break
+    Sys.sleep(60)
+  }
+
+  results <- map[]
 
   diagnostics_file <- bind_rows(results)
   write_parquet(diagnostics_file, diagnostics_path)
 
   daemons(0L)
 
-  rm(results, diagnostics_file, group_chunks, grid_file, shared_data)
+  rm(map, results, diagnostics_file, group_chunks, grid_file, shared_data)
   gc(verbose = FALSE)
 
   message(sprintf(
