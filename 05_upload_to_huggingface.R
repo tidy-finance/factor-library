@@ -7,7 +7,7 @@ library("fs")
 #   1. Builds the Hugging-Face-ready grid from the construction grid by stripping
 #      the "sv_" prefix from `sorting_variable`. The prefix is an internal
 #      construction convention (the sorting-variable columns in the panel are
-#      named sv_<name>, see 05_portfolio_sorts.R), but it must not leak into the
+#      named sv_<name>, see 04_portfolio_sorts.R), but it must not leak into the
 #      published data: the factor-library return partitions and the
 #      `download_data(..., sorting_variable = "bm")` argument both use the bare
 #      name (e.g. "bm", not "sv_bm"). Keeping the grid prefixed forced consumers
@@ -15,7 +15,7 @@ library("fs")
 #      https://github.com/tidy-finance/r-tidyfinance/issues/284.
 #
 #      The construction grid (data/portfolio_sort_grid.parquet) keeps the prefix
-#      because scripts 01-05 rely on it; only the published copy is stripped.
+#      because scripts 01-04 rely on it; only the published copy is stripped.
 #
 #   2. Uploads the partitioned returns and the stripped grid to Hugging Face via
 #      the `hf` CLI. Authenticate first with `hf auth login` (a token with write
