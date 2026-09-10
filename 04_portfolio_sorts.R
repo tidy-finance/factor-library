@@ -28,7 +28,7 @@ grid <- read_parquet("data/portfolio_sort_grid.parquet") |>
     )
   )
 
-process_task <- function(row, sorting_data, output_dir) {
+process_task <- function(row, sorting_data) {
   warnings_collected <- character(0)
 
   result <- tryCatch(
@@ -79,7 +79,7 @@ process_task <- function(row, sorting_data, output_dir) {
           quiet = TRUE
         )
 
-        long_short_return <- portfolio_returns |>
+        portfolio_returns |>
           compute_long_short_returns(direction = row$direction) |>
           pivot_longer(-date, names_to = "ret_type", values_to = "ret") |>
           mutate(
@@ -89,14 +89,6 @@ process_task <- function(row, sorting_data, output_dir) {
             ret = replace_na(ret, 0)
           ) |>
           select(id, sorting_variable, date, ret_type, ret)
-
-        dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
-        write_parquet(
-          long_short_return,
-          file.path(output_dir, paste0("id_", row$id, ".parquet"))
-        )
-
-        "success"
       },
       warning = function(w) {
         warnings_collected <<- c(warnings_collected, conditionMessage(w))
@@ -106,21 +98,17 @@ process_task <- function(row, sorting_data, output_dir) {
     error = function(e) e
   )
 
-  if (is.character(result)) {
-    tibble(
+  failed <- inherits(result, "error")
+
+  list(
+    diagnostics = tibble(
       id = row$id,
-      status = result,
+      status = if (failed) paste("error:", as.character(result)) else "success",
       n_warnings = length(warnings_collected),
       warnings = paste(warnings_collected, collapse = " | ")
-    )
-  } else {
-    tibble(
-      id = row$id,
-      status = paste("error:", as.character(result)),
-      n_warnings = length(warnings_collected),
-      warnings = paste(warnings_collected, collapse = " | ")
-    )
-  }
+    ),
+    returns = if (failed) NULL else result
+  )
 }
 
 fixed_cols <- c(
@@ -193,7 +181,9 @@ for (path in unique_paths) {
   # each means the map ends on a few multi-hour stragglers while the rest of the
   # pool idles, and daemons beyond 179 never get work. Sub-divide so tasks
   # outnumber daemons ~20:1; each chunk still holds exactly one sorting
-  # variable, so the materialized column set per task is unchanged.
+  # variable, so the materialized column set per task is unchanged. The chunk is
+  # also the output file, so this ratio sets file size (~570 sorts, ~11 MB) and
+  # the returns each worker buffers before writing (~50 MB).
   rows_per_task <- max(1L, ceiling(nrow(grid_file) / (n_workers * 20L)))
 
   group_chunks <- grid_file |>
@@ -220,22 +210,43 @@ for (path in unique_paths) {
         drop = FALSE
       ]
 
-      output_dirs <- file.path(
-        "data",
-        "portfolio_returns",
-        paste0("sorting_variable=", chunk$sorting_variable),
-        paste0("sorting_variable_lag=", chunk$sorting_variable_lag)
+      tasks <- lapply(
+        seq_len(nrow(chunk)),
+        function(i) process_task(chunk[i, ], task_data)
       )
 
-      out <- bind_rows(lapply(
-        seq_len(nrow(chunk)),
-        function(i) process_task(chunk[i, ], task_data, output_dirs[i])
-      ))
+      # sorting_variable and sorting_variable_lag are constant within a chunk,
+      # so the whole chunk belongs to one partition and is written as one file.
+      # One file per sort instead would make ~1.4M files of ~2000 rows, which
+      # cost ~50% more on disk than the consolidated equivalent (12.9 vs 8.6
+      # bytes/row) and force the repartition below to read a footer per file.
+      # Ordering by id groups each series contiguously, which is another ~6%.
+      chunk_returns <- bind_rows(lapply(tasks, `[[`, "returns")) |>
+        arrange(id, date)
+
+      if (nrow(chunk_returns) > 0) {
+        output_dir <- file.path(
+          "data",
+          "portfolio_returns",
+          paste0("sorting_variable=", chunk$sorting_variable[1]),
+          paste0("sorting_variable_lag=", chunk$sorting_variable_lag[1])
+        )
+        dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+        write_parquet(
+          chunk_returns,
+          file.path(
+            output_dir,
+            paste0("chunk_", chunk$chunk_index[1], ".parquet")
+          )
+        )
+      }
+
+      out <- bind_rows(lapply(tasks, `[[`, "diagnostics"))
 
       # shared_data holds the private materialization caches of the touched
       # columns; drop its binding too so this gc frees them before the task
       # returns instead of at some later gc during the next task.
-      rm(task_data, shared_data)
+      rm(task_data, shared_data, tasks, chunk_returns)
       gc(verbose = FALSE)
       out
     },
@@ -291,9 +302,20 @@ message("All done! ", nrow(diagnostics), " tasks processed.")
 
 # Clean up and finalize partition
 
+# ret is 92% of the bytes here, so it is the only column whose encoding matters.
+# float32 keeps ~7.2 significant digits against the ~5-6 carried by the CRSP
+# returns it averages: worst-case error on this panel is 0.0003 basis points,
+# which moves a t-statistic by <1e-7 and a 65-year compounded return by <1e-7
+# relative. It does put values outside all.equal()'s default tolerance
+# (1.5e-8 < float32 eps of 1.19e-7), so consumers comparing a downloaded series
+# against a locally rebuilt one need tolerance = 1e-6. zstd adds ~6% over snappy
+# at the same read speed and is read natively by pyarrow, polars and duckdb.
 temporary_folder <- "data/portfolio_returns_new"
 open_dataset("data/portfolio_returns/") |>
-  mutate(sorting_variable = sub("^sv_", "", sorting_variable)) |>
+  mutate(
+    sorting_variable = sub("^sv_", "", sorting_variable),
+    ret = cast(ret, float32())
+  ) |>
   left_join(
     grid |> select(id, sorting_method, n_portfolios_main),
     join_by(id)
@@ -305,7 +327,9 @@ open_dataset("data/portfolio_returns/") |>
       "sorting_variable_lag",
       "sorting_method",
       "n_portfolios_main"
-    )
+    ),
+    compression = "zstd",
+    compression_level = 3
   )
 
 
