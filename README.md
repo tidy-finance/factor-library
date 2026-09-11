@@ -12,8 +12,8 @@ many defensible construction choices and writes the resulting factor returns as 
 of Parquet files that hold nothing but `id`, `date`, and `ret`, which is then uploaded
 to Hugging Face. Sorting variables
 are the firm-level characteristics published by [Open Source Asset
-Pricing](https://www.openassetpricing.com/) (Chen and Zimmermann, 2022): the current
-release covers **179 sorting variables** (the continuous OSAP predictors plus the
+Pricing](https://www.openassetpricing.com/) (Chen and Zimmermann, 2022): the pipeline
+covers **179 sorting variables** (the continuous OSAP predictors plus the
 three CRSP-based signals OSAP adds) across **4,105,728 construction
 specifications**.
 
@@ -199,10 +199,10 @@ sorting-variable panels holds ~180 signal columns).
 
 ### Software
 
-- **R** (version pinned in [`renv.lock`](renv.lock); developed under R 4.5.2).
+- **R** (version pinned in [`renv.lock`](renv.lock); developed under R 4.6.1).
 - **[renv](https://rstudio.github.io/renv/)** to restore the locked package
   environment.
-- **[tidyfinance](https://github.com/tidy-finance/r-tidyfinance)** 0.6.0 (CRAN), as
+- **[tidyfinance](https://github.com/tidy-finance/r-tidyfinance)** 0.8.0 (CRAN), as
   recorded in `renv.lock`.
 - **[Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli)**
   (`hf`) for the publish step.
