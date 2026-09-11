@@ -33,7 +33,6 @@ crsp_monthly |>
     exchange,
     siccd,
     mktcap_lag,
-    size = mktcap,
     price = prc,
     listing_age
   ) |>

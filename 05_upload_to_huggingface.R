@@ -56,7 +56,8 @@ if (!all(grepl("^id_[0-9]+-[0-9]+\\.parquet$", path_file(returns_files)))) {
   ))
 }
 
-returns_columns <- names(open_dataset(returns_dir)$schema)
+# Unifying reads every file's schema rather than only the first file's
+returns_columns <- names(open_dataset(returns_dir, unify_schemas = TRUE)$schema)
 
 if (!identical(returns_columns, c("id", "date", "ret"))) {
   cli::cli_abort(c(

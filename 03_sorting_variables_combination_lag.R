@@ -5,7 +5,12 @@ library("tidyfinance")
 
 sorting_variables_osap <- read_parquet("data/sorting_variables_osap.parquet")
 
-compustat_filters <- read_parquet("data/compustat_annual.parquet")
+# Annual Compustat is dated at the fiscal-year-end month. Move it to the month
+# OSAP treats annual accounts as available (six months later) so the filters
+# carry the same release lag as the signals before the conventions below stack
+# their lags on top.
+compustat_filters <- read_parquet("data/compustat_annual.parquet") |>
+  mutate(date = date %m+% months(6))
 
 crsp_monthly <- read_parquet("data/crsp_monthly.parquet")
 
@@ -46,7 +51,6 @@ for (lag_label in names(lag_conventions)) {
       siccd,
       mktcap_lag,
       price,
-      size,
       listing_age,
       be,
       earnings,

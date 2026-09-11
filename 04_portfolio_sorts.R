@@ -5,7 +5,7 @@ library("mori")
 
 # Input data is shared via mori, so transfer to workers is free; per-worker
 # memory is bounded by private copies of the columns a task actually touches
-# (~12 of the ~190 shared columns) plus transient sort allocations.
+# (~9 of the ~190 shared columns) plus transient sort allocations.
 n_workers <- 30L
 
 message(sprintf("Using %d worker daemon(s).", n_workers))
@@ -34,9 +34,15 @@ na_to_null <- function(x) {
 #   * Within a file, rows are sorted by `id` and `date`.
 
 task_dir <- "data/portfolio_returns_tasks"
+task_index <- file.path(task_dir, "index.parquet")
 output_dir <- "data/portfolio_returns"
 ids_per_file <- 1000L
 id_width <- 7L # Zero-padding of the ids in the file names (~4.1M ids)
+
+# CONSOLIDATE_ONLY=true skips the sorts and rebuilds output_dir from the scratch
+# files and index the last run left behind, so a failed consolidation does not
+# cost the days of sorting before it.
+consolidate_only <- identical(Sys.getenv("CONSOLIDATE_ONLY"), "true")
 
 # Scratch file of a task, named after the chunk of the grid it computes
 task_file <- function(sorting_variable, sorting_variable_lag, chunk_index) {
@@ -66,7 +72,7 @@ process_task <- function(row, sorting_data) {
   result <- tryCatch(
     withCallingHandlers(
       {
-        sorting_variables <- grep("sv_", names(sorting_data), value = TRUE)
+        sorting_variables <- row$sorting_variable
 
         rebalancing_month <- if (row$rebalancing == "monthly") NULL else 7L
         bp_exchanges <- strsplit(row$breakpoints_exchanges, split = "\\|")[[1]]
@@ -83,6 +89,9 @@ process_task <- function(row, sorting_data) {
 
         if (row$sorting_method != "univariate") {
           sorting_variables <- c(sorting_variables, "mktcap_lag")
+          # breakpoints_min_size_threshold screens only the main breakpoints;
+          # the secondary sort is on size itself, so its breakpoints are not
+          # size-screened.
           options_secondary <- breakpoint_options(
             n_portfolios = row$n_portfolios_secondary,
             breakpoints_exchanges = bp_exchanges
@@ -145,15 +154,15 @@ process_task <- function(row, sorting_data) {
   )
 }
 
+# Only the columns that filters enabled in the grid read. Add price or be here
+# before enabling min_stock_price or exclude_negative_book_equity in 02.
 fixed_cols <- c(
   "permno",
   "date",
   "ret_excess",
   "exchange",
   "siccd",
-  "price",
   "listing_age",
-  "be",
   "earnings",
   "mktcap_lag"
 )
@@ -171,13 +180,13 @@ diagnostics_dir <- "data/task_diagnostics"
 dir.create(diagnostics_dir, recursive = TRUE, showWarnings = FALSE)
 
 # Scratch files of an earlier run must not end up in the published data
-if (fs::dir_exists(task_dir)) {
+if (!consolidate_only && fs::dir_exists(task_dir)) {
   fs::dir_delete(task_dir)
 }
 
 task_files <- list()
 
-for (path in unique_paths) {
+for (path in if (consolidate_only) character() else unique_paths) {
   lag_label <- tools::file_path_sans_ext(basename(path))
   diagnostics_path <- file.path(
     diagnostics_dir,
@@ -221,11 +230,15 @@ for (path in unique_paths) {
   # One task per sorting variable is far too coarse: 179 tasks of 1920 sorts
   # each means the map ends on a few multi-hour stragglers while the rest of the
   # pool idles, and daemons beyond 179 never get work. Sub-divide so tasks
-  # outnumber daemons ~20:1; each chunk still holds exactly one sorting
-  # variable, so the materialized column set per task is unchanged. The chunk is
-  # also the scratch file, so this ratio sets the returns each worker buffers
-  # before writing (~570 sorts, ~27 MB).
-  rows_per_task <- max(1L, ceiling(nrow(grid_file) / (n_workers * 20L)))
+  # outnumber daemons ~20:1, capped at 500 sorts so that fewer daemons do not
+  # mean coarser tasks; each chunk still holds exactly one sorting variable, so
+  # the materialized column set per task is unchanged. The chunk is also the
+  # scratch file, so the cap bounds the returns each worker buffers before
+  # writing (~23 MB).
+  rows_per_task <- min(
+    500L,
+    max(1L, ceiling(nrow(grid_file) / (n_workers * 20L)))
+  )
 
   grid_file <- grid_file |>
     mutate(
@@ -297,19 +310,45 @@ for (path in unique_paths) {
   n_tasks <- length(map)
   repeat {
     n_done <- sum(vapply(map, function(x) !unresolved(x), logical(1)))
+    daemon_status <- status()
     message(sprintf(
       "[%s] %d/%d tasks done (%.1f%%), %d daemon(s) executing.",
       Sys.time(),
       n_done,
       n_tasks,
       100 * n_done / n_tasks,
-      status()$mirai[["executing"]]
+      daemon_status$mirai[["executing"]]
     ))
     if (n_done == n_tasks) break
+    # mirai does not relaunch local daemons, so once all have exited the
+    # remaining tasks would stay unresolved forever.
+    if (daemon_status$connections == 0L) {
+      stop(sprintf(
+        "All daemons exited with %d of %d tasks unfinished.",
+        n_tasks - n_done,
+        n_tasks
+      ))
+    }
     Sys.sleep(60)
   }
 
   results <- map[]
+
+  # A chunk that fails outside process_task resolves to an error value instead
+  # of its diagnostics, e.g. error value 19 when its daemon was killed for
+  # memory. Record its sorts as failed so the remaining lags still run and the
+  # consolidation leaves them out.
+  for (i in which(vapply(results, is_error_value, logical(1)))) {
+    results[[i]] <- tibble(
+      id = group_chunks[[i]]$id,
+      status = paste(
+        "error: chunk failed:",
+        paste(as.character(results[[i]]), collapse = " ")
+      ),
+      n_warnings = 0L,
+      warnings = ""
+    )
+  }
 
   diagnostics_file <- bind_rows(results)
   write_parquet(diagnostics_file, diagnostics_path)
@@ -325,6 +364,12 @@ for (path in unique_paths) {
     basename(path),
     diagnostics_path
   ))
+}
+
+if (consolidate_only) {
+  task_files <- list(read_parquet(task_index))
+} else {
+  write_parquet(bind_rows(task_files), task_index)
 }
 
 diagnostics <- open_dataset(diagnostics_dir) |>

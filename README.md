@@ -136,10 +136,10 @@ returns <- ids |>
 ```
 
 Joining `returns` with the grid by `id` recovers every construction choice behind a
-series. Because the file names encode the id range and rows are sorted by `id`, any
-Parquet client that can filter on `id` (for example DuckDB reading
-`hf://datasets/tidy-finance/factor-library/*.parquet`) only needs to touch the files
-that hold the requested ids.
+series. Because rows are sorted by `id`, any Parquet client that filters on `id` skips
+the data of files outside the requested range. A glob such as DuckDB's
+`hf://datasets/tidy-finance/factor-library/*.parquet` still reads the footer of every
+file first, so computing the file names from the ids, as above, is cheaper.
 
 ## Publishing to Hugging Face
 
@@ -186,8 +186,8 @@ No data are committed to this repository. The `data/` directory is gitignored.
   *Critical Finance Review*) and are downloaded at run time from the OSAP Google
   Drive release in `01_download_raw_data.R`. Cite Chen and Zimmermann
   when using the library. Note that Google Drive intermittently refuses the ~1.7 GB
-  download with a quota error; the script reuses a local copy under `temp/` when one
-  exists, so a failed attempt can simply be retried later.
+  download with a quota error. The script then stops; rerun it later, which downloads
+  the file again from scratch.
 - **Output** is the factor library itself, released under **CC-BY-4.0** on Hugging
   Face. It is the authors' own artefact.
 
@@ -229,9 +229,15 @@ one via `options(gargle_oauth_email = "you@example.com")` in `.Rprofile`.
 
 `04_portfolio_sorts.R` parallelizes across specifications with
 [mirai](https://mirai.r-lib.org/) daemons and shares the input panel across workers
-via [mori](https://github.com/r-lib/mori). The worker count (`n_workers`) is a
-memory/throughput trade-off — see the comment at the top of the script and reduce it
-on machines with less RAM.
+via [mori](https://github.com/r-lib/mori). The worker count (`n_workers`, 30 by
+default) is a memory/throughput trade-off: the panel is shared once, but each daemon
+keeps private copies of the columns its sorts touch plus the sort's working memory,
+which peaks at roughly 2–3 GB. Reduce `n_workers` on machines with less RAM.
+
+If the run fails after the sorts, while consolidating the scratch files into
+`data/portfolio_returns/`, rerun it with the environment variable
+`CONSOLIDATE_ONLY=true`. That rebuilds the published files from the scratch files of
+the failed run without repeating the sorts.
 
 ## Reproducibility
 
