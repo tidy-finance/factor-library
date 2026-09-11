@@ -10,6 +10,38 @@ options(future.globals.maxSize = Inf)
 options(parallelly.fork.enable = TRUE)
 plan(multicore, workers = n_workers)
 
+# Output layout ---------------------------------------------------------------
+#
+# Every task computes one specification of the grid under all three weighting
+# schemes and writes the long-short returns to a scratch file below `task_dir`.
+# Once all tasks are done, the scratch files are consolidated into
+# `output_dir`, which is the layout that 06_upload_to_huggingface.R publishes:
+#
+#   * The files hold nothing but `id`, `date`, and `ret`. Everything else about
+#     a return series (sorting variable, lag, weighting scheme, ...) is a
+#     property of its `id` and lives in the grid, so it is not repeated here.
+#   * The files are cut by contiguous ranges of `ids_per_file` ids and named
+#     after the range they cover, e.g. `id_000001-001000.parquet`, so the file
+#     holding an id follows from the id alone:
+#       id_first <- (id - 1) %/% ids_per_file * ids_per_file + 1
+#       id_last <- id_first + ids_per_file - 1
+#   * Within a file, rows are sorted by `id` and `date`.
+
+task_dir <- "data/portfolio_returns_tasks"
+output_dir <- "data/portfolio_returns"
+ids_per_file <- 1000L
+id_width <- 6L # Zero-padding of the ids in the file names
+
+# Scratch file of a task, named after the id of the grid row it computes
+task_file <- function(sorting_variable, sorting_variable_lag, id) {
+  file.path(
+    task_dir,
+    paste0("sorting_variable=", sorting_variable),
+    paste0("sorting_variable_lag=", sorting_variable_lag),
+    paste0("task_", id, ".parquet")
+  )
+}
+
 sv_directions <- read_parquet("data/sorting_variable_information.parquet") |>
   transmute(sorting_variable = str_c("sv_", sorting_variable), direction)
 
@@ -22,7 +54,7 @@ grid <- read_parquet("data/portfolio_sort_grid.parquet") |>
     )
   )
 
-process_task <- function(row, sorting_data, output_dir) {
+process_task <- function(row, sorting_data, path) {
   warnings_collected <- character(0)
 
   result <- tryCatch(
@@ -85,22 +117,21 @@ process_task <- function(row, sorting_data, output_dir) {
           quiet = TRUE
         )
 
+        # `row` is the EW row of the specification. Its VW and capped VW rows
+        # carry the next two ids because `weighting_scheme` is the innermost
+        # dimension of the grid (see 01_define_portfolio_sorts_grid.R).
         long_short_return <- portfolio_returns |>
           compute_long_short_returns(direction = row$direction) |>
           pivot_longer(-date, names_to = "ret_type", values_to = "ret") |>
           mutate(
             ret_type = str_remove(ret_type, "ret_excess_"),
             id = row$id + match(ret_type, c("ew", "vw", "vw_capped")) - 1L,
-            sorting_variable = row$sorting_variable,
             ret = replace_na(ret, 0)
           ) |>
-          select(id, sorting_variable, date, ret_type, ret)
+          select(id, date, ret)
 
-        dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
-        write_parquet(
-          long_short_return,
-          file.path(output_dir, paste0("id_", row$id, ".parquet"))
-        )
+        dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+        write_parquet(long_short_return, path)
 
         "success"
       },
@@ -127,6 +158,11 @@ process_task <- function(row, sorting_data, output_dir) {
       warnings = paste(warnings_collected, collapse = " | ")
     )
   }
+}
+
+# Scratch files of an earlier run must not end up in the published data
+if (fs::dir_exists(task_dir)) {
+  fs::dir_delete(task_dir)
 }
 
 unique_paths <- unique(grid$parquet_path)
@@ -163,11 +199,10 @@ for (p in seq_along(unique_paths)) {
     ) |>
     collect()
 
-  output_dirs <- file.path(
-    "data",
-    "portfolio_returns",
-    paste0("sorting_variable=", group_grid$sorting_variable),
-    paste0("sorting_variable_lag=", group_grid$sorting_variable_lag)
+  task_files <- task_file(
+    group_grid$sorting_variable,
+    group_grid$sorting_variable_lag,
+    group_grid$id
   )
 
   results <- future_lapply(
@@ -190,7 +225,7 @@ for (p in seq_along(unique_paths)) {
         drop = FALSE
       ]
 
-      process_task(row, task_data, output_dirs[i])
+      process_task(row, task_data, task_files[i])
     },
     future.seed = TRUE,
     future.chunk.size = max(1L, nrow(group_grid) %/% (n_workers * 4L))
@@ -213,25 +248,99 @@ diagnostics <- bind_rows(all_diagnostics)
 write_parquet(diagnostics, "data/task_diagnostics.parquet")
 message("All done! ", nrow(diagnostics), " tasks processed.")
 
-# Clean up and finalize partition
+# Consolidate the task files into the published layout -----------------------
 
-temporary_folder <- "data/portfolio_returns_new"
-open_dataset("data/portfolio_returns/") |>
-  mutate(sorting_variable = str_remove(sorting_variable, "^sv_")) |>
-  left_join(
-    grid |> select(id, sorting_method, n_portfolios_main),
-    join_by(id)
-  ) |>
-  write_dataset(
-    path = temporary_folder,
-    partitioning = c(
-      "sorting_variable",
-      "sorting_variable_lag",
-      "sorting_method",
-      "n_portfolios_main"
-    )
+message(
+  sprintf("[%s] Consolidating task files into %s...", Sys.time(), output_dir)
+)
+
+# A task writes one specification under all weighting schemes to the file named
+# after its EW row, so the ids in a task file are those of the grid rows that
+# agree on every construction choice except `weighting_scheme`.
+id_files <- grid |>
+  group_by(across(-c(id, weighting_scheme))) |>
+  mutate(task_id = id[weighting_scheme == "EW"]) |>
+  ungroup() |>
+  transmute(
+    id,
+    task = task_file(sorting_variable, sorting_variable_lag, task_id),
+    id_first = (id - 1L) %/% ids_per_file * ids_per_file + 1L,
+    id_last = id_first + ids_per_file - 1L
   )
 
+# Tasks that failed (see task_diagnostics.parquet) have no scratch file, so
+# their ids are left out of the published data.
+tasks <- id_files |>
+  distinct(task) |>
+  mutate(found = unname(fs::file_exists(task)))
 
-fs::dir_delete("data/portfolio_returns/")
-fs::file_move(temporary_folder, "data/portfolio_returns/")
+if (any(!tasks$found)) {
+  message(
+    sprintf(
+      "%d of %d task files are missing; see data/task_diagnostics.parquet.",
+      sum(!tasks$found),
+      nrow(tasks)
+    )
+  )
+}
+
+id_files <- id_files |>
+  semi_join(tasks |> filter(found), join_by(task))
+
+files <- id_files |>
+  group_by(id_first, id_last) |>
+  summarise(ids = list(id), tasks = list(unique(task)), .groups = "drop") |>
+  mutate(
+    file = str_c(
+      "id_",
+      formatC(id_first, width = id_width, format = "d", flag = "0"),
+      "-",
+      formatC(id_last, width = id_width, format = "d", flag = "0"),
+      ".parquet"
+    )
+  ) |>
+  arrange(id_first)
+
+if (fs::dir_exists(output_dir)) {
+  fs::dir_delete(output_dir)
+}
+fs::dir_create(output_dir)
+
+n_rows <- 0
+for (i in seq_len(nrow(files))) {
+  id_first <- files$id_first[i]
+  id_last <- files$id_last[i]
+
+  returns <- open_dataset(files$tasks[[i]], partitioning = NULL) |>
+    filter(id >= id_first, id <= id_last) |>
+    select(id, date, ret) |>
+    collect() |>
+    arrange(id, date)
+
+  if (!setequal(returns$id, files$ids[[i]])) {
+    stop(
+      sprintf("The ids read for %s do not match the grid.", files$file[i])
+    )
+  }
+
+  write_parquet(returns, file.path(output_dir, files$file[i]))
+  n_rows <- n_rows + nrow(returns)
+
+  if (i %% 100 == 0 || i == nrow(files)) {
+    message(
+      sprintf("[%s] Wrote %d of %d files", Sys.time(), i, nrow(files))
+    )
+  }
+}
+
+fs::dir_delete(task_dir)
+
+message(
+  sprintf(
+    "Wrote %d ids (%d rows) to %d files in %s.",
+    nrow(id_files),
+    n_rows,
+    nrow(files),
+    output_dir
+  )
+)
