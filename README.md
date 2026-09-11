@@ -8,8 +8,9 @@ and consumed through the [tidyfinance](https://github.com/tidy-finance/r-tidyfin
 R package via `download_data("tidyfinance", "factor_library")`.
 
 The pipeline runs [tidyfinance](https://github.com/tidy-finance/r-tidyfinance) across
-many defensible construction choices and writes the resulting factor returns as a
-partitioned Parquet dataset, which is then uploaded to Hugging Face. Sorting variables
+many defensible construction choices and writes the resulting factor returns as a set
+of Parquet files that hold nothing but `id`, `date`, and `ret`, which is then uploaded
+to Hugging Face. Sorting variables
 are the firm-level characteristics published by [Open Source Asset
 Pricing](https://www.openassetpricing.com/) (Chen and Zimmermann, 2022): the current
 release covers **179 sorting variables** (the continuous OSAP predictors plus the
@@ -42,12 +43,16 @@ see [Data](#data)). Run them from the project root.
 | [`01_download_raw_data.R`](01_download_raw_data.R) | `crsp_monthly.parquet`, `compustat_annual.parquet`, `sorting_variables_osap.parquet`, `sorting_variable_information.parquet` | Downloads the CRSP monthly panel and a slim Compustat extract (book equity and earnings, needed only for the negative-BE/earnings filters) from WRDS, plus the Open Source Asset Pricing signed wide file and SignalDoc from Google Drive. Keeps the continuous OSAP predictors, adds the three CRSP-based signals (short-term reversal, price, size), and converts everything into monthly `sv_*` sorting variables. |
 | [`02_define_portfolio_sorts_grid.R`](02_define_portfolio_sorts_grid.R) | `portfolio_sort_grid.parquet` | Expands the full grid of construction specifications (size filters, industry exclusions, lags, rebalancing, breakpoints, weighting schemes, …) over the OSAP sorting variables. |
 | [`03_sorting_variables_combination_lag.R`](03_sorting_variables_combination_lag.R) | `sorting_variables_lag_{1m,3m,6m,ff}.parquet` | Join the OSAP sorting variables onto the CRSP monthly panel under each lag convention (1-month = OSAP-native timing, 3-month, 6-month, Fama-French July). |
-| [`04_portfolio_sorts.R`](04_portfolio_sorts.R) | `data/portfolio_returns/` (partitioned), `task_diagnostics.parquet` | Runs `implement_portfolio_sort()` across every specification in the grid (in parallel), computes long-short returns, and writes a Hive-partitioned Parquet dataset. |
-| [`05_upload_to_huggingface.R`](05_upload_to_huggingface.R) | `data/publish/portfolio_sort_grid.parquet` | Builds the Hugging-Face-ready grid (strips the `sv_` prefix from `sorting_variable`) and uploads the returns and the grid to Hugging Face via the `hf` CLI. |
+| [`04_portfolio_sorts.R`](04_portfolio_sorts.R) | `data/portfolio_returns/` (one Parquet file per id range), `task_diagnostics.parquet` | Runs `implement_portfolio_sort()` across every specification in the grid (in parallel), computes long-short returns, and consolidates them into Parquet files that hold only `id`, `date`, and `ret`, cut by id range. |
+| [`05_upload_to_huggingface.R`](05_upload_to_huggingface.R) | `data/publish/portfolio_sort_grid.parquet` | Checks the layout of the returns, builds the Hugging-Face-ready grid (strips the `sv_` prefix from `sorting_variable`), and uploads the returns and the grid to Hugging Face via the `hf` CLI. |
 
-The final `data/portfolio_returns/` dataset is partitioned by `sorting_variable`,
-`sorting_variable_lag`, `sorting_method`, and `n_portfolios_main`, which is the layout
-served from Hugging Face.
+The final `data/portfolio_returns/` directory is the layout served from Hugging Face.
+It is normalized: the returns carry nothing but the `id` of a specification, the
+`date`, and the long-short return `ret`. Everything else about a series (sorting
+variable, lag, sorting method, weighting scheme, …) is a property of its `id` and is
+looked up in the grid, so nothing from the grid is repeated in the returns, neither as
+columns nor as partition keys. See [Storage layout](#storage-layout) for how the files
+are cut and how to pull the returns for a given `id`.
 
 To replicate the entire library, restore the locked R environment and run the scripts
 in order from the project root (WRDS credentials must be configured first — see
@@ -71,15 +76,87 @@ Then publish the results to Hugging Face by running the publish step (see
 Rscript 05_upload_to_huggingface.R       # requires `hf auth login` first
 ```
 
+## Storage layout
+
+`04_portfolio_sorts.R` writes the returns as Parquet files with exactly three columns:
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `id` | int32 | Specification id, i.e. the row of the grid that describes the series. |
+| `date` | date32 | Month of the return. |
+| `ret` | float32 | Monthly long-short excess return. |
+
+Returns are stored in single precision, so compare a downloaded series against a
+locally rebuilt one with a tolerance of about `1e-6`.
+
+The files are cut by contiguous ranges of 1,000 ids and named after the range they
+cover, so the file that holds a series follows from its `id` alone:
+
+```
+id_0000001-0001000.parquet
+id_0001001-0002000.parquet
+…
+id_4105001-4106000.parquet
+```
+
+Within a file, rows are sorted by `id` and `date`. The last file is named after its
+nominal range although it only holds ids up to the last id of the grid.
+
+To pull the returns for one or more ids, resolve the ids in the grid, compute their
+files, download only those, and keep the requested ids:
+
+```r
+library(dplyr)
+library(purrr)
+library(arrow)
+
+ids <- c(1L, 2L, 3L)
+
+returns_file <- function(id, ids_per_file = 1000) {
+  id_first <- (id - 1) %/% ids_per_file * ids_per_file + 1
+  sprintf("id_%07d-%07d.parquet", id_first, id_first + ids_per_file - 1)
+}
+
+read_returns <- function(file) {
+  url <- paste0(
+    "https://huggingface.co/datasets/tidy-finance/factor-library/resolve/main/",
+    file
+  )
+  path <- tempfile(fileext = ".parquet")
+  download.file(url, path, mode = "wb", quiet = TRUE)
+  read_parquet(path)
+}
+
+returns <- ids |>
+  returns_file() |>
+  unique() |>
+  map(read_returns) |>
+  list_rbind() |>
+  filter(id %in% ids)
+```
+
+Joining `returns` with the grid by `id` recovers every construction choice behind a
+series. Because the file names encode the id range and rows are sorted by `id`, any
+Parquet client that can filter on `id` (for example DuckDB reading
+`hf://datasets/tidy-finance/factor-library/*.parquet`) only needs to touch the files
+that hold the requested ids.
+
 ## Publishing to Hugging Face
 
 [`05_upload_to_huggingface.R`](05_upload_to_huggingface.R) publishes two datasets:
 
-- the partitioned `data/portfolio_returns/` dataset to
+- the id-range files in `data/portfolio_returns/` to
   [`tidy-finance/factor-library`](https://huggingface.co/datasets/tidy-finance/factor-library), and
 - the construction grid to
   [`tidy-finance/factor-library-grid`](https://huggingface.co/datasets/tidy-finance/factor-library-grid)
   (read back through the package as `factor_library_grid`).
+
+Before uploading, the script checks that `data/portfolio_returns/` contains nothing but
+id-range files with exactly the columns `id`, `date`, and `ret`. The returns upload
+passes `--delete "*.parquet"`, which deletes every Parquet file the repo already holds
+in the same commit, so the repo mirrors the local directory exactly and no file of an
+earlier layout survives a release. Earlier releases remain available through the
+repo's commit history.
 
 Both uploads use the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli)
 (`hf upload`), so authenticate first with `hf auth login` using a token that has
@@ -89,12 +166,12 @@ write access to the `tidy-finance` organization.
 
 Inside the pipeline the sorting-variable columns of the panel are named `sv_<name>`
 (e.g. `sv_bm`), and `portfolio_sort_grid.parquet` carries that prefix in its
-`sorting_variable` values so scripts 01–05 can address those columns. The prefix is
+`sorting_variable` values so scripts 01–04 can address those columns. The prefix is
 an internal construction detail and must not leak into the published data: the
-factor-library return partitions and the `download_data(..., sorting_variable = "bm")`
-argument both use the bare name. `04_portfolio_sorts.R` already strips the prefix from
-the returns; `05_upload_to_huggingface.R` strips it from the grid before upload so the
-two published datasets agree (see
+`download_data(..., sorting_variable = "bm")` argument uses the bare name. The
+published returns carry no `sorting_variable` column at all (see
+[Storage layout](#storage-layout)), so only the grid needs stripping:
+`05_upload_to_huggingface.R` strips the prefix from the grid before upload (see
 [tidy-finance/r-tidyfinance#284](https://github.com/tidy-finance/r-tidyfinance/issues/284)).
 
 ## Data
