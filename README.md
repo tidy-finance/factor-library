@@ -200,7 +200,7 @@ No data are committed to this repository. The `data/` directory is gitignored.
   when using the library. Note that Google Drive intermittently refuses the ~1.7 GB
   download with a quota error. The script then stops; rerun it later, which downloads
   the file again from scratch.
-- **Output** is the factor library itself, released under **CC-BY-4.0** on Hugging
+- **Output** is the factor library itself, released under **CC0-1.0** on Hugging
   Face. It is the authors' own artefact.
 
 Running the full pipeline requires on the order of **tens of GB of intermediate
@@ -263,7 +263,8 @@ the paper was built from data accessed on **June 1, 2026**.
 ## License
 
 Code in this repository is released under the MIT License (see [LICENSE](LICENSE)). The
-published factor library is released separately under CC-BY-4.0 on Hugging Face.
+published factor library is released separately under CC0-1.0 on Hugging Face; its dataset
+cards say how to cite it.
 
 ## Related resources
 
