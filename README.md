@@ -44,7 +44,7 @@ see [Data](#data)). Run them from the project root.
 | [`02_define_portfolio_sorts_grid.R`](02_define_portfolio_sorts_grid.R) | `portfolio_sort_grid.parquet` | Expands the full grid of construction specifications (size filters, industry exclusions, lags, rebalancing, breakpoints, weighting schemes, …) over the OSAP sorting variables. |
 | [`03_sorting_variables_combination_lag.R`](03_sorting_variables_combination_lag.R) | `sorting_variables_lag_{1m,3m,6m,ff}.parquet` | Join the OSAP sorting variables onto the CRSP monthly panel under each lag convention (1-month = OSAP-native timing, 3-month, 6-month, Fama-French July). |
 | [`04_portfolio_sorts.R`](04_portfolio_sorts.R) | `data/portfolio_returns/` (one Parquet file per id range), `task_diagnostics.parquet` | Runs `implement_portfolio_sort()` across every specification in the grid (in parallel), computes long-short returns, and consolidates them into Parquet files that hold only `id`, `date`, and `ret`, cut by id range. |
-| [`05_upload_to_huggingface.R`](05_upload_to_huggingface.R) | `data/publish/portfolio_sort_grid.parquet` | Checks the layout of the returns, builds the Hugging-Face-ready grid (strips the `sv_` prefix from `sorting_variable`), and uploads the returns and the grid to Hugging Face via the `hf` CLI. |
+| [`05_upload_to_huggingface.R`](05_upload_to_huggingface.R) | `data/publish/portfolio_sort_grid.parquet`, `data/publish/portfolio_sort_grid/<sorting_variable>.parquet`, `data/publish/sorting_variables.parquet` | Checks the layout of the returns, builds the Hugging-Face-ready grid (strips the `sv_` prefix from `sorting_variable`), one slice of it per sorting variable, and the list of sorting variables, and uploads the returns and these files to Hugging Face via the `hf` CLI. |
 
 The final `data/portfolio_returns/` directory is the layout served from Hugging Face.
 It is normalized: the returns carry nothing but the `id` of a specification, the
@@ -149,7 +149,13 @@ file first, so computing the file names from the ids, as above, is cheaper.
   [`tidy-finance/factor-library`](https://huggingface.co/datasets/tidy-finance/factor-library), and
 - the construction grid to
   [`tidy-finance/factor-library-grid`](https://huggingface.co/datasets/tidy-finance/factor-library-grid)
-  (read back through the package as `factor_library_grid`).
+  (read back through the package as `factor_library_grid`), together with one
+  slice of it per sorting variable (`portfolio_sort_grid/<sorting_variable>.parquet`)
+  and the list of sorting variables with their full names and high-minus-low
+  directions (`sorting_variables.parquet`). The slices serve clients that need
+  one sorting variable at a time, such as the app at
+  [factors.tidy-finance.org](https://factors.tidy-finance.org), which runs R in
+  the browser and cannot load the 19 MB grid.
 
 Before uploading, the script checks that `data/portfolio_returns/` contains nothing but
 id-range files with exactly the columns `id`, `date`, and `ret`.
@@ -162,6 +168,14 @@ then deletes every Parquet file in the repo that no longer exists locally. The r
 thus mirrors the local directory exactly, and no file of an earlier layout survives a
 release. The second pass uploads only files the Hub lacks, which is none after a clean
 first pass. Earlier releases remain available through the repo's commit history.
+
+The grid, its slices, and the list go up in a single commit. Because the script
+rebuilds `data/publish/` from scratch, that commit's `--delete
+"portfolio_sort_grid/*.parquet"` removes the slices of sorting variables that are no
+longer in the grid. The slice folder is named after the grid file so that the grid
+stays the first Parquet file in the Hub's path-ordered file listing, which
+py-tidyfinance 0.5.1 reads as the grid; other clients should read
+`portfolio_sort_grid.parquet` by name.
 
 The Hub allows 1,000 API requests per 5 minutes and 128 commits per hour, so the script
 caps the upload at two workers. If `hf upload-large-folder` keeps failing to commit
@@ -185,6 +199,9 @@ published returns carry no `sorting_variable` column at all (see
 [Storage layout](#storage-layout)), so only the grid needs stripping:
 `05_upload_to_huggingface.R` strips the prefix from the grid before upload (see
 [tidy-finance/r-tidyfinance#284](https://github.com/tidy-finance/r-tidyfinance/issues/284)).
+The published list of sorting variables comes from `sorting_variable_information.parquet`,
+whose names never carried the prefix: `02_define_portfolio_sorts_grid.R` adds it when
+it builds the grid.
 
 ## Data
 

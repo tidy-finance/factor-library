@@ -26,7 +26,13 @@ library("fs")
 #      prefix because scripts 01-04 rely on it; only the published copy is
 #      stripped.
 #
-#   3. Uploads the returns and the stripped grid to Hugging Face via the `hf`
+#      Two smaller files go next to the grid for clients that cannot load all
+#      of it, such as the Shiny app at factors.tidy-finance.org, which runs R
+#      in the browser: one slice of the grid per sorting variable, and the
+#      list of sorting variables with their full names and high-minus-low
+#      directions.
+#
+#   3. Uploads the returns and the grid files to Hugging Face via the `hf`
 #      CLI. The returns go up with `hf upload-large-folder`, which commits in
 #      batches and picks up where it stopped when rerun: a single commit of
 #      the ~12 GB folder is slow, and a failure near its end loses all of it.
@@ -42,11 +48,21 @@ grid_repo <- "tidy-finance/factor-library-grid"
 
 returns_dir <- "data/portfolio_returns"
 construction_grid <- "data/portfolio_sort_grid.parquet"
+sorting_variable_information <- "data/sorting_variable_information.parquet"
 
 # The published grid keeps the same file name it currently has on the Hub
 # (portfolio_sort_grid.parquet) so existing consumers keep resolving it.
 publish_dir <- "data/publish"
 published_grid <- file.path(publish_dir, "portfolio_sort_grid.parquet")
+
+# The slices sit in a folder named after the grid file. The Hub lists files in
+# path order, so the grid stays the first Parquet file of the repo, which is
+# the file py-tidyfinance 0.5.1 reads as the grid.
+published_slices <- file.path(publish_dir, "portfolio_sort_grid")
+published_sorting_variables <- file.path(
+  publish_dir,
+  "sorting_variables.parquet"
+)
 
 # 1. Check the returns -------------------------------------------------------
 
@@ -73,13 +89,67 @@ message("Checked ", length(returns_files), " return files in ", returns_dir)
 
 # 2. Build the stripped, Hugging-Face-ready grid -----------------------------
 
-dir_create(publish_dir)
+# The folder goes up as a whole, so it is rebuilt from scratch: a slice left
+# over from a sorting variable that has since been dropped would otherwise be
+# uploaded again and survive on the Hub.
+if (dir_exists(publish_dir)) {
+  dir_delete(publish_dir)
+}
+dir_create(published_slices)
 
-read_parquet(construction_grid) |>
-  mutate(sorting_variable = sub("^sv_", "", sorting_variable)) |>
-  write_parquet(published_grid)
+grid <- read_parquet(construction_grid) |>
+  mutate(sorting_variable = sub("^sv_", "", sorting_variable))
+
+write_parquet(grid, published_grid)
 
 message("Wrote stripped grid to ", published_grid)
+
+# A slice holds at most 23,040 rows, about 115 KB with zstd, against 19 MB for
+# the full grid. Together the slices hold exactly the rows of the grid.
+for (grid_slice in split(grid, grid$sorting_variable)) {
+  write_parquet(
+    grid_slice,
+    path(published_slices, grid_slice$sorting_variable[1], ext = "parquet"),
+    compression = "zstd"
+  )
+}
+
+message(
+  "Wrote ", n_distinct(grid$sorting_variable), " grid slices to ",
+  published_slices
+)
+
+# 01_download_raw_data.R names the sorting variables without the "sv_" prefix
+# (02_define_portfolio_sorts_grid.R adds it for the construction grid), so the
+# names match the stripped grid as they are. A mismatch means that one of the
+# two files was rebuilt without the other, and a client would offer sorting
+# variables without a slice or miss some that have one.
+sorting_variables <- read_parquet(sorting_variable_information) |>
+  select(sorting_variable, full_name, direction) |>
+  arrange(sorting_variable)
+
+grid_variables <- unique(grid$sorting_variable)
+only_in_grid <- setdiff(grid_variables, sorting_variables$sorting_variable)
+only_in_information <- setdiff(
+  sorting_variables$sorting_variable,
+  grid_variables
+)
+
+if (length(only_in_grid) > 0 || length(only_in_information) > 0) {
+  cli::cli_abort(c(
+    paste(
+      "The grid and {.path {sorting_variable_information}} disagree on the",
+      "sorting variables."
+    ),
+    "x" = "Only in the grid: {.val {only_in_grid}}",
+    "x" = "Only in the information: {.val {only_in_information}}",
+    "i" = "Rerun scripts 02 to 04, which build the grid from the information."
+  ))
+}
+
+write_parquet(sorting_variables, published_sorting_variables)
+
+message("Wrote the list of sorting variables to ", published_sorting_variables)
 
 # 3. Upload to Hugging Face --------------------------------------------------
 
@@ -131,7 +201,14 @@ hf_upload_large_folder <- function(repo_id, local_path) {
 hf_upload_large_folder(returns_repo, returns_dir)
 hf_upload(returns_repo, returns_dir, ".", delete = "*.parquet")
 
-# Grid: upload the stripped grid under its existing file name.
-hf_upload(grid_repo, published_grid, "portfolio_sort_grid.parquet")
+# Grid: the grid, its slices, and the list of sorting variables go up in one
+# commit, so the Hub never serves slices or a list from another release than
+# the grid. The pattern deletes the slices of sorting variables no longer in
+# the grid; it only matches files inside portfolio_sort_grid/, so the grid
+# file and the dataset card stay.
+hf_upload(
+  grid_repo, publish_dir, ".",
+  delete = "portfolio_sort_grid/*.parquet"
+)
 
 message("Upload complete.")
