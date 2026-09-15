@@ -27,12 +27,15 @@ library("fs")
 #      stripped.
 #
 #   3. Uploads the returns and the stripped grid to Hugging Face via the `hf`
-#      CLI. The returns upload deletes every Parquet file the repo already
-#      holds in the same commit, so the repo mirrors data/portfolio_returns/
-#      exactly and no file of an earlier layout survives a release. Earlier
-#      releases remain available through the repo's commit history.
-#      Authenticate first with `hf auth login` (a token with write access to
-#      the tidy-finance organization is required).
+#      CLI. The returns go up with `hf upload-large-folder`, which commits in
+#      batches and picks up where it stopped when rerun: a single commit of
+#      the ~12 GB folder is slow, and a failure near its end loses all of it.
+#      A second pass over the same folder then deletes every Parquet file the
+#      repo holds that is no longer local, so the repo mirrors
+#      data/portfolio_returns/ exactly and no file of an earlier layout
+#      survives a release. Earlier releases remain available through the
+#      repo's commit history. Authenticate first with `hf auth login` (a token
+#      with write access to the tidy-finance organization is required).
 
 returns_repo <- "tidy-finance/factor-library"
 grid_repo <- "tidy-finance/factor-library-grid"
@@ -104,9 +107,28 @@ hf_upload <- function(repo_id, local_path, path_in_repo, delete = NULL) {
   }
 }
 
-# Returns: mirror the local layout at the repo root. Deleting every Parquet
-# file the repo already holds in the same commit removes the files of earlier
-# releases that the new files do not overwrite.
+hf_upload_large_folder <- function(repo_id, local_path) {
+  args <- c(
+    "upload-large-folder",
+    repo_id,
+    shQuote(local_path),
+    "--repo-type", "dataset",
+    # The Hub allows 1,000 API requests per 5 minutes. On a fast connection
+    # more workers exceed that, and files caught by the rate limit can end up
+    # marked as sent although the Hub never registered them.
+    "--num-workers", "2"
+  )
+  status <- system2("hf", args)
+  if (status != 0) {
+    cli::cli_abort("Upload to {.val {repo_id}} failed (exit status {status}).")
+  }
+}
+
+# Returns: upload-large-folder cannot delete remote files, so a second pass
+# over the same folder deletes the Parquet files of earlier releases that the
+# new files do not overwrite. It checks each file against the Hub and uploads
+# only what the Hub lacks, which is nothing after a clean first pass.
+hf_upload_large_folder(returns_repo, returns_dir)
 hf_upload(returns_repo, returns_dir, ".", delete = "*.parquet")
 
 # Grid: upload the stripped grid under its existing file name.

@@ -152,15 +152,27 @@ file first, so computing the file names from the ids, as above, is cheaper.
   (read back through the package as `factor_library_grid`).
 
 Before uploading, the script checks that `data/portfolio_returns/` contains nothing but
-id-range files with exactly the columns `id`, `date`, and `ret`. The returns upload
-passes `--delete "*.parquet"`, which deletes every Parquet file the repo already holds
-in the same commit, so the repo mirrors the local directory exactly and no file of an
-earlier layout survives a release. Earlier releases remain available through the
-repo's commit history.
+id-range files with exactly the columns `id`, `date`, and `ret`.
+
+The returns go up with `hf upload-large-folder`, which commits in batches. If it's
+interrupted, a rerun picks up where it stopped, using the state it keeps in
+`data/portfolio_returns/.cache/huggingface/`; `04_portfolio_sorts.R` wipes that state
+along with the rest of the directory. A second pass with `hf upload --delete "*.parquet"`
+then deletes every Parquet file in the repo that no longer exists locally. The repo
+thus mirrors the local directory exactly, and no file of an earlier layout survives a
+release. The second pass uploads only files the Hub lacks, which is none after a clean
+first pass. Earlier releases remain available through the repo's commit history.
+
+The Hub allows 1,000 API requests per 5 minutes and 128 commits per hour, so the script
+caps the upload at two workers. If `hf upload-large-folder` keeps failing to commit
+because "an LFS pointer pointed to a file that does not exist", stop it, delete
+`data/portfolio_returns/.cache/huggingface/`, and rerun the script: it skips the files
+already committed and resends the missing ones. If uploads time out on the Xet storage
+backend, set `HF_HUB_DISABLE_XET=1` to fall back to plain LFS.
 
 Both uploads use the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli)
-(`hf upload`), so authenticate first with `hf auth login` using a token that has
-write access to the `tidy-finance` organization.
+(`hf upload` and `hf upload-large-folder`), so authenticate first with `hf auth login`
+using a token that has write access to the `tidy-finance` organization.
 
 ### The `sv_` prefix
 
@@ -188,7 +200,7 @@ No data are committed to this repository. The `data/` directory is gitignored.
   when using the library. Note that Google Drive intermittently refuses the ~1.7 GB
   download with a quota error. The script then stops; rerun it later, which downloads
   the file again from scratch.
-- **Output** is the factor library itself, released under **CC-BY-4.0** on Hugging
+- **Output** is the factor library itself, released under **CC0-1.0** on Hugging
   Face. It is the authors' own artefact.
 
 Running the full pipeline requires on the order of **tens of GB of intermediate
@@ -251,7 +263,8 @@ the paper was built from data accessed on **June 1, 2026**.
 ## License
 
 Code in this repository is released under the MIT License (see [LICENSE](LICENSE)). The
-published factor library is released separately under CC-BY-4.0 on Hugging Face.
+published factor library is released separately under CC0-1.0 on Hugging Face; its dataset
+cards say how to cite it.
 
 ## Related resources
 
