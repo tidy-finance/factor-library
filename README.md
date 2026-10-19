@@ -26,7 +26,6 @@ paper and the package consume it.
 | --- | --- |
 | **`factor-library`** (this repo) | Builds the factor library from raw CRSP/Compustat data and uploads it to Hugging Face. |
 | [`tidy-finance/r-tidyfinance`](https://github.com/tidy-finance/r-tidyfinance) | The R package whose functions this pipeline calls and through which users retrieve the library. |
-| [`tidy-finance/paper-factor-construction`](https://github.com/tidy-finance/paper-factor-construction) | The JSS manuscript and replication package, which downloads the library from Hugging Face rather than rebuilding it. |
 | [`tidy-finance/factor-library`](https://huggingface.co/datasets/tidy-finance/factor-library) (Hugging Face) | The published artefact this pipeline produces. |
 
 Most users never run this pipeline: they download precomputed series with a single
