@@ -1,0 +1,97 @@
+default:
+  directories:
+    raw: data/raw
+    panels: data/panels
+    # Every task of 05_portfolio_sorts.R writes the returns and the costs of one
+    # sorting variable at one lag here, so a rerun skips the finished tasks.
+    tasks: data/tasks
+    # 07_upload_to_huggingface.R mirrors these folders to the Hugging Face
+    # datasets tidy-finance/factor-library and tidy-finance/factor-library-grid.
+    factor_library: data/factor_library
+    factor_library_grid: data/factor_library_grid
+
+  # The inputs that 01_download_data.R writes to the raw data directory.
+  raw_files:
+    crsp_monthly: crsp_monthly.parquet
+    compustat_annual: compustat_annual.parquet
+    quotes: crsp_daily_quotes
+    osap_signals: osap_signed_predictors.zip
+    signal_documentation: osap_signal_doc.csv
+
+  # The files that the scripts pass on to each other.
+  files:
+    sort_grid: data/portfolio_sort_grid.parquet
+    sorting_variables: data/sorting_variables.parquet
+    persistence: data/sorting_variable_persistence.parquet
+    stock_costs: data/stock_costs.parquet
+
+  # The Hugging Face dataset cards, which 07_upload_to_huggingface.R publishes
+  # as the README.md of each dataset.
+  cards:
+    factor_library: cards/factor-library.md
+    factor_library_grid: cards/factor-library-grid.md
+
+  sample:
+    start_date: 1960-01-01
+    end_date: 2024-12-31
+
+  # The October 2025 release (v2.0.0) of Open Source Asset Pricing: the Google
+  # Drive file of the signed firm-level characteristics, and the commit of
+  # github.com/OpenSourceAP/CrossSection that the release tag points to.
+  osap:
+    signals_file: 1avFIMjz_7LoF3p3nO26eqLW5KdRTOdhW
+    release_commit: b4e911e69678a7424f318617a61d813f54183123
+    # OSAP treat annual accounts as public six months after the fiscal year
+    # end.
+    release_lag_months: 6
+
+  # OSAP date a characteristic when it is public. The 1-, 3- and 6-month lags
+  # use the value that has been public for at least that long. The window up
+  # to the maximum lets the annual earnings carry over the months between two
+  # fiscal year ends.
+  lags:
+    1m:
+      minimum_months: 1
+      maximum_months: 13
+    3m:
+      minimum_months: 3
+      maximum_months: 15
+    6m:
+      minimum_months: 6
+      maximum_months: 18
+
+  # Annual portfolios are formed in July.
+  rebalancing_month: 7
+
+  # The persistence of a timing choice is the Spearman correlation across
+  # stocks between the value its paths sort on and the up-to-date value, in
+  # months with at least this many stocks.
+  persistence:
+    up_to_date_lag: 1m
+    minimum_stocks: 30
+
+  # Every trade pays half the quoted spread of its stock.
+  trading_costs:
+    # NYSE quotes in CRSP start in 1993, so costs start in 1994.
+    first_month: 1994-01-01
+    # Quotes with a spread above this share of the midquote are errors.
+    maximum_relative_spread: 0.5
+    # Spreads above this quantile of the month are set to it.
+    spread_winsor_quantile: 0.99
+    # Microcaps are the stocks below this quantile of NYSE market
+    # capitalization.
+    microcap_quantile: 0.2
+
+  # The published files hold the paths of this many consecutive ids each.
+  ids_per_file: 1000
+
+  # Each worker sorts one sorting variable at one lag, a few GB each.
+  worker_count: 7
+  # Each worker of the stock panels joins eight characteristics at every lag
+  # and measures their persistence, about 3 GB each on Windows, more on Linux.
+  panel_worker_count: 2
+
+# A UCloud cpu-amd-zen5 node with 128 vCPUs and 384 GB.
+cloud:
+  worker_count: 40
+  panel_worker_count: 20
