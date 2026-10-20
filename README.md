@@ -22,14 +22,14 @@ Run the scripts in order from the repository root. Each script reads its setting
 | [`07_upload_to_huggingface.R`](07_upload_to_huggingface.R) | `data/factor_library/`, grid, sorting variables, persistence, `cards/` | `data/factor_library_grid/`, `data/factor_library/README.md`, and the two Hugging Face datasets |
 
 ```bash
-Rscript -e 'renv::restore(prompt = FALSE)'
-Rscript 01_download_data.R
-Rscript 02_define_portfolio_sorts_grid.R
-Rscript 03_stock_panels.R
-Rscript 04_stock_costs.R
-Rscript 05_portfolio_sorts.R
-Rscript 06_check_portfolio_sorts.R
-Rscript 07_upload_to_huggingface.R
+uvr sync --frozen
+uvr run 01_download_data.R
+uvr run 02_define_portfolio_sorts_grid.R
+uvr run 03_stock_panels.R
+uvr run 04_stock_costs.R
+uvr run 05_portfolio_sorts.R
+uvr run 06_check_portfolio_sorts.R
+uvr run 07_upload_to_huggingface.R
 ```
 
 Reruns pick up where a run stopped. `01_download_data.R` keeps the OSAP file and the years of quotes already on disk and downloads the rest again, and `05_portfolio_sorts.R` skips the tasks whose costs file exists. Delete `data/tasks/` before a fresh build.
@@ -59,13 +59,13 @@ The dataset cards define the data in full. In short:
 
 ## Credentials
 
-- **WRDS** (`01_download_data.R`): set the credentials once with `tidyfinance::set_wrds_credentials()`, or put `WRDS_USER` and `WRDS_PASSWORD` in a local `.Renviron`. Git ignores `.Renviron`; never commit credentials.
+- **WRDS** (`01_download_data.R`): tidyfinance reads the credentials from `WRDS_USER` and `WRDS_PASSWORD`. `uvr run` does not read `.Renviron`, so set them in the shell first, for example with `set -a && source .Renviron && set +a` in bash. Git ignores `.Renviron`; never commit credentials.
 - **Google Drive** (`01_download_data.R`): the OSAP file downloads without a Google login. Google Drive often answers "Quota exceeded" for this file. The script then fails, and a rerun a day later continues.
 - **Hugging Face** (`07_upload_to_huggingface.R`): install the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli) and run `hf auth login` with a token that has write access to the `tidy-finance` organization.
 
 ## Computational requirements
 
-- **Software.** R 4.6.1 and the packages in [`renv.lock`](renv.lock), which `renv::restore()` installs, among them tidyfinance 0.9.0.9008 from GitHub at commit `bf87021`, nanoparquet, mirai, and mori. The upload needs the `hf` command line interface.
+- **Software.** R 4.6.1 and the packages in [`uvr.toml`](uvr.toml), among them tidyfinance 0.9.0.9008 from GitHub at commit `bf87021`, nanoparquet, mirai, and mori. [uvr](https://github.com/nbafrank/uvr) 0.4.7 installs R (`uvr r install 4.6.1`) and the exact package versions of [`uvr.lock`](uvr.lock) (`uvr sync --frozen`) into the project library `.uvr/library`, which `.Rprofile` activates whenever R starts in the repository root. On Linux, `uvr sync --frozen --install-system-deps` also installs the system libraries that some packages need. The upload needs the `hf` command line interface.
 - **Hardware.** The full build runs on a UCloud `cpu-amd-zen5` node with 128 virtual CPUs and 384 GB of memory. Select the `cloud` profile of `config.yml` there with `export R_CONFIG_ACTIVE=cloud`. It runs 40 sort workers and 20 panel workers; the default profile runs 7 and 2. The main process of `03_stock_panels.R` holds the panels of all four lags at once, about 40 GB, so the default profile needs a machine with 64 GB of memory. A panel worker needs about 3 GB on Windows and more on Linux, and a sort worker holds more than 6 GB once it has sorted a few tasks. On Linux, glibc keeps the memory that R frees, so the workers of a long run grow until the machine runs out of memory. Fixed thresholds return that memory to the system. Set them before R starts:
 
   ```bash
@@ -79,7 +79,7 @@ The dataset cards define the data in full. In short:
 A release depends on four inputs that change over time:
 
 - the October 2025 release (v2.0.0) of Open Source Asset Pricing, Google Drive file `1avFIMjz_7LoF3p3nO26eqLW5KdRTOdhW`, and its signal documentation at commit `b4e911e69678a7424f318617a61d813f54183123` of [OpenSourceAP/CrossSection](https://github.com/OpenSourceAP/CrossSection) (both set in `config.yml`);
-- tidyfinance at commit `bf87021` (set in `renv.lock`);
+- tidyfinance at commit `bf87021` (set in `uvr.toml`);
 - the monthly risk-free rate of the Hugging Face dataset [`tidy-finance/risk-free`](https://huggingface.co/datasets/tidy-finance/risk-free), which tidyfinance reads at `main` when it computes the excess returns of CRSP;
 - the CRSP and Compustat data on WRDS, which their vendors revise. Each release records the date of these downloads and the last commit of both datasets here. Current release: `to-be-set-after-the-release`.
 
