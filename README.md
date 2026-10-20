@@ -73,7 +73,7 @@ The dataset cards define the data in full. In short:
   export MALLOC_ARENA_MAX=2 MALLOC_MMAP_THRESHOLD_=131072 MALLOC_TRIM_THRESHOLD_=131072
   ```
 - **Storage.** The OSAP file takes 1.6 GB zipped and more than 6 GB unzipped, which `03_stock_panels.R` unzips next to the zip while it runs, the four stock panels tens of GB, and the published library about 12 GB of returns plus the costs.
-- **Upload.** The Hub allows 1,000 API requests per five minutes and 128 commits per hour, so `07_upload_to_huggingface.R` uploads with two workers. `hf upload-large-folder` keeps its state in `data/factor_library/.cache/huggingface/`, and a rerun after an interruption continues from there. If it keeps failing because "an LFS pointer pointed to a file that does not exist", delete that folder and rerun. If uploads time out on the Xet storage backend, set `HF_HUB_DISABLE_XET=1`.
+- **Upload.** `07_upload_to_huggingface.R` needs version 2 of the `hf` command line interface, whose `hf upload` splits a large folder into several commits. If the upload stops, rerun the script; it continues where it stopped. If uploads time out on the Xet storage backend, set `HF_HUB_DISABLE_XET=1`.
 
 ## Reproducibility
 

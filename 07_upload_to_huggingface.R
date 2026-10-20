@@ -155,27 +155,8 @@ hf_upload <- function(repository, directory, delete) {
   }
 }
 
-# upload-large-folder resumes after an interruption. Two workers stay below
-# the Hub's limit of 1,000 requests per five minutes.
-status <- system2(
-  "hf",
-  c(
-    "upload-large-folder",
-    returns_repository,
-    shQuote(library_directory),
-    "--repo-type",
-    "dataset",
-    "--num-workers",
-    "2"
-  )
-)
-if (status != 0) {
-  cli::cli_abort(
-    "The upload to {.val {returns_repository}} failed (exit status {status})."
-  )
-}
-# upload-large-folder cannot delete, so a second pass removes the Parquet
-# files of earlier releases, in costs/ as well.
+# hf upload splits the library into several commits and resumes when rerun.
+# The pattern removes the Parquet files of earlier releases, in costs/ as well.
 hf_upload(returns_repository, library_directory, delete = "*.parquet")
 # One commit, so the grid files of different releases never mix.
 hf_upload(
