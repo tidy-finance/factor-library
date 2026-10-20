@@ -1,291 +1,91 @@
 # Tidy Finance Factor Library — Construction Pipeline
 
-This repository contains the construction pipeline behind the **Tidy Finance Factor
-Library**: the precomputed set of long-short factor return series that is published
-on Hugging Face at
-[`tidy-finance/factor-library`](https://huggingface.co/datasets/tidy-finance/factor-library)
-and consumed through the [tidyfinance](https://github.com/tidy-finance/r-tidyfinance)
-R package via `download_data("tidyfinance", "factor_library")`.
+This repository builds the **Tidy Finance Factor Library** and publishes it on Hugging Face in two datasets:
 
-The pipeline runs [tidyfinance](https://github.com/tidy-finance/r-tidyfinance) across
-many defensible construction choices and writes the resulting factor returns as a set
-of Parquet files that hold nothing but `id`, `date`, and `ret`, which is then uploaded
-to Hugging Face. Sorting variables
-are the firm-level characteristics published by [Open Source Asset
-Pricing](https://www.openassetpricing.com/) (Chen and Zimmermann, 2022): the pipeline
-covers **179 sorting variables** (the continuous OSAP predictors plus the
-three CRSP-based signals OSAP adds) across **4,105,728 construction
-specifications**.
+- [`tidy-finance/factor-library`](https://huggingface.co/datasets/tidy-finance/factor-library): the monthly long-short return of every construction specification (path), and in `costs/` its turnover, trading cost, and microcap share.
+- [`tidy-finance/factor-library-grid`](https://huggingface.co/datasets/tidy-finance/factor-library-grid): the grid of construction choices behind every `id`, one slice of it per sorting variable, the list of sorting variables, and the persistence of every timing choice.
 
-## How this repository fits in
+The library covers 179 sorting variables, the continuous predictors of the October 2025 release of [Open Source Asset Pricing](https://www.openassetpricing.com/) (Chen and Zimmermann, 2022), across 4,105,728 specifications. The signed OSAP file omits three of them, short-term reversal, price, and size, which the pipeline computes from CRSP. Most users never run this pipeline. They download the series with the [tidyfinance](https://github.com/tidy-finance/r-tidyfinance) R package, the [py-tidyfinance](https://github.com/tidy-finance/py-tidyfinance) Python package, or directly from Hugging Face. The dataset cards in [`cards/`](cards) describe the published data and how to read it; this README describes how to build it.
 
-This is the **upstream** repository in a three-part system. It produces the data; the
-paper and the package consume it.
+## Pipeline
 
-| Repository / artefact | Role |
-| --- | --- |
-| **`factor-library`** (this repo) | Builds the factor library from raw CRSP/Compustat data and uploads it to Hugging Face. |
-| [`tidy-finance/r-tidyfinance`](https://github.com/tidy-finance/r-tidyfinance) | The R package whose functions this pipeline calls and through which users retrieve the library. |
-| [`tidy-finance/factor-library`](https://huggingface.co/datasets/tidy-finance/factor-library) (Hugging Face) | The published artefact this pipeline produces. |
+Run the scripts in order from the repository root. Each script reads its settings from [`config.yml`](config.yml) and runs on its own once the outputs of the earlier scripts exist. All data go to `data/`, which git ignores.
 
-Most users never run this pipeline: they download precomputed series with a single
-`download_data()` call. This repository exists so that the construction of the library
-is **transparent, inspectable, and reproducible** — the central claim of the paper.
-
-## Pipeline overview
-
-The numbered scripts run in order. Each reads from and writes to `data/` (gitignored;
-see [Data](#data)). Run them from the project root.
-
-| Script | Produces | Description |
+| Script | Reads | Writes |
 | --- | --- | --- |
-| [`01_download_raw_data.R`](01_download_raw_data.R) | `crsp_monthly.parquet`, `compustat_annual.parquet`, `sorting_variables_osap.parquet`, `sorting_variable_information.parquet` | Downloads the CRSP monthly panel and a slim Compustat extract (book equity and earnings, needed only for the negative-BE/earnings filters) from WRDS, plus the Open Source Asset Pricing signed wide file and SignalDoc from Google Drive. Keeps the continuous OSAP predictors, adds the three CRSP-based signals (short-term reversal, price, size), and converts everything into monthly `sv_*` sorting variables. |
-| [`02_define_portfolio_sorts_grid.R`](02_define_portfolio_sorts_grid.R) | `portfolio_sort_grid.parquet` | Expands the full grid of construction specifications (size filters, industry exclusions, lags, rebalancing, breakpoints, weighting schemes, …) over the OSAP sorting variables. |
-| [`03_sorting_variables_combination_lag.R`](03_sorting_variables_combination_lag.R) | `sorting_variables_lag_{1m,3m,6m,ff}.parquet` | Join the OSAP sorting variables onto the CRSP monthly panel under each lag convention (1-month = OSAP-native timing, 3-month, 6-month, Fama-French July). |
-| [`04_portfolio_sorts.R`](04_portfolio_sorts.R) | `data/portfolio_returns/` (one Parquet file per id range), `task_diagnostics.parquet` | Runs `implement_portfolio_sort()` across every specification in the grid (in parallel), computes long-short returns, and consolidates them into Parquet files that hold only `id`, `date`, and `ret`, cut by id range. |
-| [`05_upload_to_huggingface.R`](05_upload_to_huggingface.R) | `data/publish/portfolio_sort_grid.parquet`, `data/publish/portfolio_sort_grid/<sorting_variable>.parquet`, `data/publish/sorting_variables.parquet` | Checks the layout of the returns, builds the Hugging-Face-ready grid (strips the `sv_` prefix from `sorting_variable`), one slice of it per sorting variable, and the list of sorting variables, and uploads the returns and these files to Hugging Face via the `hf` CLI. |
-
-The final `data/portfolio_returns/` directory is the layout served from Hugging Face.
-It is normalized: the returns carry nothing but the `id` of a specification, the
-`date`, and the long-short return `ret`. Everything else about a series (sorting
-variable, lag, sorting method, weighting scheme, …) is a property of its `id` and is
-looked up in the grid, so nothing from the grid is repeated in the returns, neither as
-columns nor as partition keys. See [Storage layout](#storage-layout) for how the files
-are cut and how to pull the returns for a given `id`.
-
-To replicate the entire library, restore the locked R environment and run the scripts
-in order from the project root (WRDS credentials must be configured first — see
-[Credentials](#credentials)):
+| [`01_download_data.R`](01_download_data.R) | WRDS, Google Drive, GitHub | `data/raw/`: CRSP monthly stock data, Compustat annual earnings, CRSP daily bid and ask prices, the OSAP signed predictors, and the OSAP signal documentation |
+| [`02_define_portfolio_sorts_grid.R`](02_define_portfolio_sorts_grid.R) | signal documentation | `data/portfolio_sort_grid.parquet`, `data/sorting_variables.parquet` |
+| [`03_stock_panels.R`](03_stock_panels.R) | CRSP, Compustat, OSAP, grid | `data/panels/<lag>.parquet` for the lags `1m`, `3m`, `6m`, and `ff`, `data/sorting_variable_persistence.parquet` |
+| [`04_stock_costs.R`](04_stock_costs.R) | CRSP monthly data and quotes | `data/stock_costs.parquet`: the half-spread and the microcap flag of every stock and month |
+| [`05_portfolio_sorts.R`](05_portfolio_sorts.R) | grid, panels, stock costs | `data/tasks/`: returns and costs of one sorting variable at one lag per file; then `data/factor_library/`, the published layout |
+| [`06_check_portfolio_sorts.R`](06_check_portfolio_sorts.R) | grid, panels, `data/factor_library/` | nothing: it stops if the library differs from tidyfinance |
+| [`07_upload_to_huggingface.R`](07_upload_to_huggingface.R) | `data/factor_library/`, grid, sorting variables, persistence, `cards/` | `data/factor_library_grid/`, `data/factor_library/README.md`, and the two Hugging Face datasets |
 
 ```bash
-# Restore the exact package versions pinned in renv.lock
-Rscript -e 'renv::restore(prompt = FALSE)'
-
-# Run the pipeline end to end
-Rscript 01_download_raw_data.R            # requires WRDS credentials and Google Drive auth
-Rscript 02_define_portfolio_sorts_grid.R
-Rscript 03_sorting_variables_combination_lag.R
-Rscript 04_portfolio_sorts.R
+uvr sync --frozen
+uvr run 01_download_data.R
+uvr run 02_define_portfolio_sorts_grid.R
+uvr run 03_stock_panels.R
+uvr run 04_stock_costs.R
+uvr run 05_portfolio_sorts.R
+uvr run 06_check_portfolio_sorts.R
+uvr run 07_upload_to_huggingface.R
 ```
 
-Then publish the results to Hugging Face by running the publish step (see
-[Publishing to Hugging Face](#publishing-to-hugging-face)):
+Reruns pick up where a run stopped. `01_download_data.R` keeps the OSAP file and the years of quotes already on disk and downloads the rest again, and `05_portfolio_sorts.R` skips the tasks whose costs file exists. Delete `data/tasks/` before a fresh build.
 
-```bash
-Rscript 05_upload_to_huggingface.R       # requires `hf auth login` first
-```
+`05_portfolio_sorts.R` sorts all paths of one sorting variable and one lag at once, with a fast engine that reproduces `tidyfinance::implement_portfolio_sort()`. `06_check_portfolio_sorts.R` sorts about 300 specifications again with tidyfinance itself. The sample takes every sorting variable, every value of every choice, and all three weightings, without random draws. The check stops and names the failing ids when a published return differs by more than single precision allows. It also stops when the months or the ids differ.
 
-## Storage layout
+## Published layout
 
-`04_portfolio_sorts.R` writes the returns as Parquet files with exactly three columns:
+`data/factor_library/` is a mirror of the returns dataset:
 
-| Column | Type | Description |
-| --- | --- | --- |
-| `id` | int32 | Specification id, i.e. the row of the grid that describes the series. |
-| `date` | date32 | Month of the return. |
-| `ret` | float32 | Monthly long-short excess return. |
+- `id_0000001-0001000.parquet`, `id_0001001-0002000.parquet`, ...: the returns, with exactly the columns `id` (int32), `date` (date32), and `ret` (float32). Each file holds 1,000 consecutive ids, sorted by `id` and `date`, compressed with zstd. An id range without rows has no file.
+- `costs/`: files with the same names and the columns `id`, `date`, `turnover`, `cost`, and `microcap_share` (float32).
+- `README.md`: a copy of [`cards/factor-library.md`](cards/factor-library.md).
 
-Returns are stored in single precision, so compare a downloaded series against a
-locally rebuilt one with a tolerance of about `1e-6`.
+`data/factor_library_grid/` is a mirror of the grid dataset: `portfolio_sort_grid.parquet`, `portfolio_sort_grid/<sorting_variable>.parquet`, `sorting_variables.parquet`, `sorting_variable_persistence.parquet`, and `README.md`, a copy of [`cards/factor-library-grid.md`](cards/factor-library-grid.md). `07_upload_to_huggingface.R` rebuilds this folder in every run.
 
-The files are cut by contiguous ranges of 1,000 ids and named after the range they
-cover, so the file that holds a series follows from its `id` alone:
+The grid names the sorting variables without a prefix (`bm`, not `sv_bm`). Only the columns of the stock panels carry the prefix `sv_`.
 
-```
-id_0000001-0001000.parquet
-id_0001001-0002000.parquet
-…
-id_4105001-4106000.parquet
-```
+## Conventions
 
-Within a file, rows are sorted by `id` and `date`. The last file is named after its
-nominal range although it only holds ids up to the last id of the grid.
+The dataset cards define the data in full. In short:
 
-To pull the returns for one or more ids, resolve the ids in the grid, compute their
-files, download only those, and keep the requested ids:
+- **Sample.** The library runs from January 1960 to December 2024. Most characteristics of the October 2025 OSAP release end in December 2024, and those based on option-implied volatility in December 2022. CRSP has later months, but without characteristics most paths would earn zero, so the sample stops there. With a new OSAP release, update its Google Drive file, its commit, and the end date in `config.yml`.
+- **Timing.** Open Source Asset Pricing date a value when it becomes public. The lags `1m`, `3m`, and `6m` use the value that has been public for at least one, three, or six months. They do not carry a value forward over months in which it is missing. The lag `ff` follows Fama and French: in July of year t, a path takes the latest value public by June of year t and keeps it until June of year t + 1.
+- **Sorts.** The sorts follow the rules of tidyfinance at commit `bf87021`. CRSP keeps the months of delistings. Capped value weights cap at the 80th percentile of NYSE stocks. Annual paths apply their filters in July only. Dependent sorts compute the size cutoff of the main breakpoints once per month.
+- **Zeros and missing paths.** A month without a long-short return has a return of exactly 0. A path that cannot be sorted at all has no rows.
+- **Costs.** Every trade pays half the quoted spread of its stock. The costs start in January 1994, because CRSP has NYSE quotes from 1993.
 
-```r
-library(dplyr)
-library(purrr)
-library(arrow)
+## Credentials
 
-ids <- c(1L, 2L, 3L)
-
-returns_file <- function(id, ids_per_file = 1000) {
-  id_first <- (id - 1) %/% ids_per_file * ids_per_file + 1
-  sprintf("id_%07d-%07d.parquet", id_first, id_first + ids_per_file - 1)
-}
-
-read_returns <- function(file) {
-  url <- paste0(
-    "https://huggingface.co/datasets/tidy-finance/factor-library/resolve/main/",
-    file
-  )
-  path <- tempfile(fileext = ".parquet")
-  download.file(url, path, mode = "wb", quiet = TRUE)
-  read_parquet(path)
-}
-
-returns <- ids |>
-  returns_file() |>
-  unique() |>
-  map(read_returns) |>
-  list_rbind() |>
-  filter(id %in% ids)
-```
-
-Joining `returns` with the grid by `id` recovers every construction choice behind a
-series. Because rows are sorted by `id`, any Parquet client that filters on `id` skips
-the data of files outside the requested range. A glob such as DuckDB's
-`hf://datasets/tidy-finance/factor-library/*.parquet` still reads the footer of every
-file first, so computing the file names from the ids, as above, is cheaper.
-
-## Publishing to Hugging Face
-
-[`05_upload_to_huggingface.R`](05_upload_to_huggingface.R) publishes two datasets:
-
-- the id-range files in `data/portfolio_returns/` to
-  [`tidy-finance/factor-library`](https://huggingface.co/datasets/tidy-finance/factor-library), and
-- the construction grid to
-  [`tidy-finance/factor-library-grid`](https://huggingface.co/datasets/tidy-finance/factor-library-grid)
-  (read back through the package as `factor_library_grid`), together with one
-  slice of it per sorting variable (`portfolio_sort_grid/<sorting_variable>.parquet`)
-  and the list of sorting variables with their full names and high-minus-low
-  directions (`sorting_variables.parquet`). The slices serve clients that need
-  one sorting variable at a time, such as the app at
-  [factors.tidy-finance.org](https://factors.tidy-finance.org), which runs R in
-  the browser and cannot load the 19 MB grid.
-
-Before uploading, the script checks that `data/portfolio_returns/` contains nothing but
-id-range files with exactly the columns `id`, `date`, and `ret`.
-
-The returns go up with `hf upload-large-folder`, which commits in batches. If it's
-interrupted, a rerun picks up where it stopped, using the state it keeps in
-`data/portfolio_returns/.cache/huggingface/`; `04_portfolio_sorts.R` wipes that state
-along with the rest of the directory. A second pass with `hf upload --delete "*.parquet"`
-then deletes every Parquet file in the repo that no longer exists locally. The repo
-thus mirrors the local directory exactly, and no file of an earlier layout survives a
-release. The second pass uploads only files the Hub lacks, which is none after a clean
-first pass. Earlier releases remain available through the repo's commit history.
-
-The grid, its slices, and the list go up in a single commit. Because the script
-rebuilds `data/publish/` from scratch, that commit's `--delete
-"portfolio_sort_grid/*.parquet"` removes the slices of sorting variables that are no
-longer in the grid. The slice folder is named after the grid file so that the grid
-stays the first Parquet file in the Hub's path-ordered file listing, which
-py-tidyfinance 0.5.1 reads as the grid; other clients should read
-`portfolio_sort_grid.parquet` by name.
-
-The Hub allows 1,000 API requests per 5 minutes and 128 commits per hour, so the script
-caps the upload at two workers. If `hf upload-large-folder` keeps failing to commit
-because "an LFS pointer pointed to a file that does not exist", stop it, delete
-`data/portfolio_returns/.cache/huggingface/`, and rerun the script: it skips the files
-already committed and resends the missing ones. If uploads time out on the Xet storage
-backend, set `HF_HUB_DISABLE_XET=1` to fall back to plain LFS.
-
-Both uploads use the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli)
-(`hf upload` and `hf upload-large-folder`), so authenticate first with `hf auth login`
-using a token that has write access to the `tidy-finance` organization.
-
-### The `sv_` prefix
-
-Inside the pipeline the sorting-variable columns of the panel are named `sv_<name>`
-(e.g. `sv_bm`), and `portfolio_sort_grid.parquet` carries that prefix in its
-`sorting_variable` values so scripts 01–04 can address those columns. The prefix is
-an internal construction detail and must not leak into the published data: the
-`download_data(..., sorting_variable = "bm")` argument uses the bare name. The
-published returns carry no `sorting_variable` column at all (see
-[Storage layout](#storage-layout)), so only the grid needs stripping:
-`05_upload_to_huggingface.R` strips the prefix from the grid before upload (see
-[tidy-finance/r-tidyfinance#284](https://github.com/tidy-finance/r-tidyfinance/issues/284)).
-The published list of sorting variables comes from `sorting_variable_information.parquet`,
-whose names never carried the prefix: `02_define_portfolio_sorts_grid.R` adds it when
-it builds the grid.
-
-## Data
-
-No data are committed to this repository. The `data/` directory is gitignored.
-
-- **Raw inputs (CRSP, Compustat)** are proprietary and require an institutional
-  [WRDS](https://wrds-www.wharton.upenn.edu/) subscription. They are downloaded at run
-  time in `01_download_raw_data.R` and are not redistributed.
-- **Firm-level characteristics** come from [Open Source Asset
-  Pricing](https://www.openassetpricing.com/) (Chen and Zimmermann, 2022,
-  *Critical Finance Review*) and are downloaded at run time from the OSAP Google
-  Drive release in `01_download_raw_data.R`. Cite Chen and Zimmermann
-  when using the library. Note that Google Drive intermittently refuses the ~1.7 GB
-  download with a quota error. The script then stops; rerun it later, which downloads
-  the file again from scratch.
-- **Output** is the factor library itself, released under **CC0-1.0** on Hugging
-  Face. It is the authors' own artefact.
-
-Running the full pipeline requires on the order of **tens of GB of intermediate
-storage** (the extracted OSAP wide file alone is ~6 GB, and each of the four lagged
-sorting-variable panels holds ~180 signal columns).
+- **WRDS** (`01_download_data.R`): tidyfinance reads the credentials from `WRDS_USER` and `WRDS_PASSWORD`. `uvr run` does not read `.Renviron`, so set them in the shell first, for example with `set -a && source .Renviron && set +a` in bash. Git ignores `.Renviron`; never commit credentials.
+- **Google Drive** (`01_download_data.R`): the OSAP file downloads without a Google login. Google Drive often answers "Quota exceeded" for this file. The script then fails, and a rerun a day later continues.
+- **Hugging Face** (`07_upload_to_huggingface.R`): install the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli) and run `hf auth login` with a token that has write access to the `tidy-finance` organization.
 
 ## Computational requirements
 
-### Software
+- **Software.** R 4.6.1 and the packages in [`uvr.toml`](uvr.toml), among them tidyfinance 0.9.0.9008 from GitHub at commit `bf87021`, nanoparquet, mirai, and mori. [uvr](https://github.com/nbafrank/uvr) 0.4.7 installs R (`uvr r install 4.6.1`) and the exact package versions of [`uvr.lock`](uvr.lock) (`uvr sync --frozen`) into the project library `.uvr/library`, which `.Rprofile` activates whenever R starts in the repository root. On Linux, `uvr sync --frozen --install-system-deps` also installs the system libraries that some packages need. The upload needs the `hf` command line interface.
+- **Hardware.** The full build runs on a UCloud `cpu-amd-zen5` node with 128 virtual CPUs and 384 GB of memory. Select the `cloud` profile of `config.yml` there with `export R_CONFIG_ACTIVE=cloud`. It runs 40 sort workers and 20 panel workers; the default profile runs 7 and 2. The main process of `03_stock_panels.R` holds the panels of all four lags at once, about 40 GB, so the default profile needs a machine with 64 GB of memory. A panel worker needs about 3 GB on Windows and more on Linux, and a sort worker holds more than 6 GB once it has sorted a few tasks. On Linux, glibc keeps the memory that R frees, so the workers of a long run grow until the machine runs out of memory. Fixed thresholds return that memory to the system. Set them before R starts:
 
-- **R** (version pinned in [`renv.lock`](renv.lock); developed under R 4.6.1).
-- **[renv](https://rstudio.github.io/renv/)** to restore the locked package
-  environment.
-- **[tidyfinance](https://github.com/tidy-finance/r-tidyfinance)** 0.8.0 (CRAN), as
-  recorded in `renv.lock`.
-- **[Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli)**
-  (`hf`) for the publish step.
-
-Every package version is pinned in `renv.lock`; the `renv::restore()` call at the top
-of the replication script in [Pipeline overview](#pipeline-overview) installs the exact
-set. Install `renv` itself first if needed (`install.packages("renv")`).
-
-### Credentials
-
-WRDS credentials are required for `01_download_raw_data.R`. Configure them once with
-`tidyfinance::set_wrds_credentials()` (preferred), or supply `WRDS_USER` /
-`WRDS_PASSWORD` via a local `.Renviron`.
-
-The OSAP download in the same script authenticates against Google Drive through the
-[googledrive](https://googledrive.tidyverse.org/) package; the first run opens a
-browser window for OAuth consent. With multiple cached Google accounts, pin the right
-one via `options(gargle_oauth_email = "you@example.com")` in `.Rprofile`.
-
-> **Do not commit credentials.** `.Renviron` is gitignored. Never store your WRDS
-> password in plaintext in a tracked file; if you have, rotate it.
-
-### Parallelism and platform
-
-`04_portfolio_sorts.R` parallelizes across specifications with
-[mirai](https://mirai.r-lib.org/) daemons and shares the input panel across workers
-via [mori](https://github.com/r-lib/mori). The worker count (`n_workers`, 30 by
-default) is a memory/throughput trade-off: the panel is shared once, but each daemon
-keeps private copies of the columns its sorts touch plus the sort's working memory,
-which peaks at roughly 2–3 GB. Reduce `n_workers` on machines with less RAM.
-
-If the run fails after the sorts, while consolidating the scratch files into
-`data/portfolio_returns/`, rerun it with the environment variable
-`CONSOLIDATE_ONLY=true`. That rebuilds the published files from the scratch files of
-the failed run without repeating the sorts.
+  ```bash
+  export MALLOC_ARENA_MAX=2 MALLOC_MMAP_THRESHOLD_=131072 MALLOC_TRIM_THRESHOLD_=131072
+  ```
+- **Storage.** The OSAP file takes 1.6 GB zipped and more than 6 GB unzipped, which `03_stock_panels.R` unzips next to the zip while it runs, the four stock panels tens of GB, and the published library about 12 GB of returns plus the costs.
+- **Upload.** The Hub allows 1,000 API requests per five minutes and 128 commits per hour, so `07_upload_to_huggingface.R` uploads with two workers. `hf upload-large-folder` keeps its state in `data/factor_library/.cache/huggingface/`, and a rerun after an interruption continues from there. If it keeps failing because "an LFS pointer pointed to a file that does not exist", delete that folder and rerun. If uploads time out on the Xet storage backend, set `HF_HUB_DISABLE_XET=1`.
 
 ## Reproducibility
 
-CRSP and Compustat periodically revise historical data, OSAP publishes annual data
-releases, and the library is rebuilt against the vintages current at run time. Exact
-numerical reproduction therefore depends on the access date and the OSAP release. Each Hugging Face release is versioned (the Hub retains
-full commit history), so results computed against an earlier release remain
-reproducible by referencing the corresponding snapshot revision. The release backing
-the paper was built from data accessed on **June 1, 2026**. 
+A release depends on four inputs that change over time:
+
+- the October 2025 release (v2.0.0) of Open Source Asset Pricing, Google Drive file `1avFIMjz_7LoF3p3nO26eqLW5KdRTOdhW`, and its signal documentation at commit `b4e911e69678a7424f318617a61d813f54183123` of [OpenSourceAP/CrossSection](https://github.com/OpenSourceAP/CrossSection) (both set in `config.yml`);
+- tidyfinance at commit `bf87021` (set in `uvr.toml`);
+- the monthly risk-free rate of the Hugging Face dataset [`tidy-finance/risk-free`](https://huggingface.co/datasets/tidy-finance/risk-free), which tidyfinance reads at `main` when it computes the excess returns of CRSP;
+- the CRSP and Compustat data on WRDS, which their vendors revise. Each release records the date of these downloads and the last commit of both datasets here. Current release: `to-be-set-after-the-release`.
+
+The returns of a release go up in many commits, the grid in one. The last commit of each dataset completes the release, and the commit histories keep all earlier releases. Users pin both datasets to the commits of the same release, as the dataset cards explain.
 
 ## License
 
-Code in this repository is released under the MIT License (see [LICENSE](LICENSE)). The
-published factor library is released separately under CC0-1.0 on Hugging Face; its dataset
-cards say how to cite it.
-
-## Related resources
-
-- R package: [tidyfinance on CRAN](https://CRAN.R-project.org/package=tidyfinance)
-- Python package: [tidy-finance/py-tidyfinance](https://github.com/tidy-finance/py-tidyfinance)
-- Factor library dataset: [tidy-finance/factor-library on Hugging Face](https://huggingface.co/datasets/tidy-finance/factor-library)
-- Interactive dashboard: [factors.tidy-finance.org](https://factors.tidy-finance.org)
-- Tidy Finance textbooks: [tidy-finance.org](https://tidy-finance.org)
+The code is released under the MIT License (see [LICENSE](LICENSE)). The published data are released under CC0 1.0. The waiver covers the authors' contribution only and grants no rights to the CRSP and Compustat data from which the library is computed. Cite the library and Open Source Asset Pricing as the dataset cards ask.

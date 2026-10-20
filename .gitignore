@@ -1,2 +1,4 @@
 data/
 .Renviron
+# The project library of uvr.
+.uvr/
