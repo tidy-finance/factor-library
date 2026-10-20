@@ -7,8 +7,6 @@ returns_repository <- "tidy-finance/factor-library"
 grid_repository <- "tidy-finance/factor-library-grid"
 library_directory <- config$directories$factor_library
 grid_directory <- config$directories$factor_library_grid
-# Clients compute the file of an id from its id range and read the columns by
-# name and type, so these layouts are part of the published contract.
 id_range_file <- "id_[0-9]{7}-[0-9]{7}[.]parquet"
 returns_layout <- c("id INT32", "date DATE", "ret FLOAT")
 costs_layout <- c(
@@ -19,7 +17,7 @@ costs_layout <- c(
   "microcap_share FLOAT"
 )
 
-# The folder goes up as a mirror, so anything else in it would be published.
+# Everything in the folder gets published.
 library_files <- list.files(library_directory, recursive = TRUE)
 returns_files <- grep(
   paste0("^", id_range_file, "$"),
@@ -42,7 +40,6 @@ if (length(other_files) > 0) {
     "i" = "Rerun {.file 05_portfolio_sorts.R} to rebuild the library."
   ))
 }
-# One revision pins the returns and the costs of the same build.
 only_returns <- setdiff(returns_files, basename(costs_files))
 only_costs <- setdiff(basename(costs_files), returns_files)
 if (length(only_returns) > 0 || length(only_costs) > 0) {
@@ -92,12 +89,8 @@ if (
   ))
 }
 
-# The folder goes up as a whole, so it is rebuilt from scratch: a slice of a
-# sorting variable that the grid no longer holds would otherwise survive on
-# the Hub. The slices serve clients that cannot load the whole grid, such as
-# the app at factors.tidy-finance.org, which runs R in the browser. They sit in
-# a folder named after the grid file, so the grid stays the first Parquet file
-# of the repository, which py-tidyfinance 0.5.1 reads as the grid.
+# The slices sit in a folder named after the grid file, so the grid stays the
+# first Parquet file of the dataset, which py-tidyfinance 0.5.1 reads.
 unlink(grid_directory, recursive = TRUE)
 dir.create(file.path(grid_directory, "portfolio_sort_grid"), recursive = TRUE)
 stopifnot(
@@ -162,13 +155,8 @@ hf_upload <- function(repository, directory, delete) {
   }
 }
 
-# A single commit of the library is slow, and a failure near its end loses all
-# of it. upload-large-folder commits in batches and, when rerun after an
-# interruption, continues where it stopped, using the state it keeps in
-# .cache/huggingface inside the folder. The Hub allows 1,000 API requests per
-# five minutes. On a fast connection more workers exceed that, and files
-# caught by the rate limit can end up marked as sent although the Hub never
-# registered them.
+# upload-large-folder resumes after an interruption. Two workers stay below
+# the Hub's limit of 1,000 requests per five minutes.
 status <- system2(
   "hf",
   c(
@@ -186,16 +174,10 @@ if (status != 0) {
     "The upload to {.val {returns_repository}} failed (exit status {status})."
   )
 }
-# upload-large-folder cannot delete files, so a second pass over the same
-# folder deletes the Parquet files of earlier releases that the new files do
-# not overwrite, in the returns and in costs/ alike: the Hub matches the
-# pattern with fnmatch, whose * also matches the slash. The pattern never
-# matches README.md. The pass uploads only what the Hub lacks, which is
-# nothing after a clean first pass, and earlier releases stay in the history.
+# upload-large-folder cannot delete, so a second pass removes the Parquet
+# files of earlier releases, in costs/ as well.
 hf_upload(returns_repository, library_directory, delete = "*.parquet")
-# The grid, its slices, the two tables, and the card go up in one commit, so
-# the Hub never serves files of different releases side by side. The pattern
-# deletes the slices of sorting variables that the grid no longer holds.
+# One commit, so the grid files of different releases never mix.
 hf_upload(
   grid_repository,
   grid_directory,
