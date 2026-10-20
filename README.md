@@ -82,7 +82,7 @@ A release depends on four inputs that change over time:
 - the October 2025 release (v2.0.0) of Open Source Asset Pricing, Google Drive file `1avFIMjz_7LoF3p3nO26eqLW5KdRTOdhW`, and its signal documentation at commit `b4e911e69678a7424f318617a61d813f54183123` of [OpenSourceAP/CrossSection](https://github.com/OpenSourceAP/CrossSection) (both set in `config.yml`);
 - tidyfinance at commit `bf87021` (set in `uvr.toml`);
 - the monthly risk-free rate of the Hugging Face dataset [`tidy-finance/risk-free`](https://huggingface.co/datasets/tidy-finance/risk-free), which tidyfinance reads at `main` when it computes the excess returns of CRSP;
-- the CRSP and Compustat data on WRDS, which their vendors revise. Each release records the date of these downloads and the last commit of both datasets here. Current release: `to-be-set-after-the-release`.
+- the CRSP and Compustat data on WRDS, which their vendors revise. Each release records the date of these downloads and the last commit of both datasets here. Current release: WRDS data downloaded on 20 October 2026; `tidy-finance/factor-library` at commit [`e47bd85accd9b9b168ac7f478f12fe89ba5c2430`](https://huggingface.co/datasets/tidy-finance/factor-library/commit/e47bd85accd9b9b168ac7f478f12fe89ba5c2430) and `tidy-finance/factor-library-grid` at commit [`a5a74cdf1df0c2c3d1ce3d7bf6403a8386fbf99d`](https://huggingface.co/datasets/tidy-finance/factor-library-grid/commit/a5a74cdf1df0c2c3d1ce3d7bf6403a8386fbf99d).
 
 The returns of a release go up in many commits, the grid in one. The last commit of each dataset completes the release, and the commit histories keep all earlier releases. Users pin both datasets to the commits of the same release, as the dataset cards explain.
 
