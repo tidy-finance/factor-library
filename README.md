@@ -52,6 +52,7 @@ The grid names the sorting variables without a prefix (`bm`, not `sv_bm`). Only 
 
 The dataset cards define the data in full. In short:
 
+- **Sample.** The library runs from January 1960 to December 2024. Most characteristics of the October 2025 OSAP release end in December 2024, and those based on option-implied volatility in December 2022. CRSP has later months, but without characteristics most paths would earn zero, so the sample stops there. With a new OSAP release, update its Google Drive file, its commit, and the end date in `config.yml`.
 - **Timing.** Open Source Asset Pricing date a value when it becomes public. The lags `1m`, `3m`, and `6m` use the value that has been public for at least one, three, or six months. They do not carry a value forward over months in which it is missing. The lag `ff` follows Fama and French: in July of year t, a path takes the latest value public by June of year t and keeps it until June of year t + 1.
 - **Sorts.** The sorts follow the rules of tidyfinance at commit `bf87021`. CRSP keeps the months of delistings. Capped value weights cap at the 80th percentile of NYSE stocks. Annual paths apply their filters in July only. Dependent sorts compute the size cutoff of the main breakpoints once per month.
 - **Zeros and missing paths.** A month without a long-short return has a return of exactly 0. A path that cannot be sorted at all has no rows.

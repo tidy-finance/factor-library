@@ -23,7 +23,7 @@ configs:
 
 # Tidy Finance Factor Library: Portfolio Returns
 
-Monthly long-short portfolio returns for 179 firm characteristics across 4,105,728 portfolio construction specifications, together with the turnover, trading cost, and microcap share of every series. The returns cover US common stocks from January 1960 to December 2024, the costs from January 1994.
+Monthly long-short portfolio returns for 179 firm characteristics across 4,105,728 portfolio construction specifications, together with the turnover, trading cost, and microcap share of every series. The returns cover US common stocks from January 1960 to December 2024, the costs from January 1994. The sample ends in December 2024 because most characteristics of the October 2025 release of Open Source Asset Pricing end there; those based on option-implied volatility end in December 2022.
 
 ## Dataset Details
 

@@ -31,6 +31,9 @@ default:
     factor_library: cards/factor-library.md
     factor_library_grid: cards/factor-library-grid.md
 
+  # The sample ends with the OSAP release: most of its characteristics end in
+  # December 2024. Later months of CRSP would give most paths no
+  # characteristic and a return of zero.
   sample:
     start_date: 1960-01-01
     end_date: 2024-12-31
