@@ -596,7 +596,11 @@ for (kind in names(schemas)) {
           sprintf("id_%07d-%07d.parquet", first_id, last_id)
         ),
         schema = schemas[[kind]],
-        compression = "zstd"
+        compression = "zstd",
+        # R has no single-precision type, so the Arrow schema that nanoparquet
+        # embeds would declare the float columns as double, and polars refuses
+        # to read such files.
+        options = parquet_options(write_arrow_metadata = FALSE)
       )
     }
   }
