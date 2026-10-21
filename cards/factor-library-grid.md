@@ -155,11 +155,11 @@ The grid, the list of sorting variables, and the persistence table are released 
 **BibTeX:**
 
 ```bibtex
-@article{Frey.2026,
-  title={A Transparent Financial Risk Factor Library},
+@unpublished{Frey.2026,
+  title={The {Tidy Finance} Factor Library},
   author={Frey, Christoph and Scheuch, Christoph and Voigt, Stefan and Weiss, Patrick},
-  year={2026},
-  journal={Working Paper}
+  type={Working paper},
+  year={2026}
 }
 ```
 
