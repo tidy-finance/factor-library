@@ -48,6 +48,7 @@ The grid contains 4,105,728 specifications for 179 sorting variables, the contin
 
 - Joining with the Portfolio Returns dataset to filter or group factor returns by specific methodological choices.
 - Robustness and sensitivity analysis: selecting subsets of specifications to study how construction decisions affect factor premia.
+- Benchmarks: selecting the paths of the original studies, of Jensen, Kelly, and Pedersen (2023), or of Hou, Xue, and Zhang (2020) through the `is_osap_path`, `is_jkp_path`, and `is_hxz_path` columns.
 - Timing choices: relating the effect of a lag or of annual rebalancing to how far the characteristic it sorts on lags behind the up-to-date value.
 - Replication: documenting the exact configuration behind a reported result.
 
@@ -59,7 +60,7 @@ The grid contains 4,105,728 specifications for 179 sorting variables, the contin
 
 The repository holds four kinds of Parquet files:
 
-- `portfolio_sort_grid.parquet`: the grid, with 17 columns and 4,105,728 rows.
+- `portfolio_sort_grid.parquet`: the grid, with 20 columns and 4,105,728 rows.
 - `portfolio_sort_grid/<sorting_variable>.parquet` (e.g., `portfolio_sort_grid/bm.parquet`): the rows of the grid for one sorting variable, at most 23,040 rows or about 115 KB each. Together these slices hold exactly the rows of the grid. They serve clients that need one sorting variable at a time, such as the [demo](https://factors.tidy-finance.org/), which runs in the browser.
 - `sorting_variables.parquet`: one row per sorting variable, with its full name and the direction of its high-minus-low portfolio.
 - `sorting_variable_persistence.parquet`: the persistence of every sorting variable under every timing choice, one row per sorting variable, lag, rebalancing frequency, and month.
@@ -87,8 +88,17 @@ Read each file by its name. A reader that loads every Parquet file of the reposi
 | `n_portfolios_secondary` | double | Number of size portfolios in bivariate sorts: `2` or `5`; `NA` for univariate sorts |
 | `breakpoints_exchanges` | string | Exchanges whose stocks set the breakpoints: `NYSE` or `AMEX\|NASDAQ\|NYSE` |
 | `weighting_scheme` | string | Portfolio weighting: `EW` (equal-weighted), `VW` (value-weighted), or `capped VW` (value-weighted with market capitalization capped at the 80th percentile of NYSE stocks each month) |
+| `is_osap_path` | bool | Whether the path is the construction of the original study, as Open Source Asset Pricing document it, mapped onto the grid |
+| `is_jkp_path` | bool | Whether the path follows the construction of Jensen, Kelly, and Pedersen (2023) |
+| `is_hxz_path` | bool | Whether the path follows the construction of Hou, Xue, and Zhang (2020) |
 
 Each set of construction choices appears three times, once per weighting scheme, with consecutive ids in the order `EW`, `VW`, `capped VW`. Ids follow the alphabetical order of the sorting variables within each lag.
+
+Each of the three `is_*_path` columns is true for exactly one path per sorting variable:
+
+- OSAP: the long-short quantile and the holding period of the original study map to the nearest option on a log scale, and a signal without a quantile to deciles. The path sorts univariately on the `1m` lag, uses the weighting and the breakpoint exchanges of the study, and applies the NYSE 20th percentile size filter if the study does. The other filters of the study are not on the grid, and choices the study leaves open take the option that drops no stocks.
+- JKP: terciles of a univariate sort on the `1m` lag, breakpoints from the stocks of all exchanges above the 20th NYSE size percentile, capped value weights, and monthly rebalancing. JKP lag all data four months; `1m` is the nearest lag of the grid.
+- HXZ: deciles of a univariate sort with NYSE breakpoints, value weights, and no financial firms. Annual accounting signals take the `ff` lag with annual rebalancing, all other signals the `1m` lag with monthly rebalancing. Their exclusion of negative book equity is not on the grid.
 
 Invalid combinations are removed: univariate sorts have no size sort, so `n_portfolios_secondary` is `NA`, and `size` itself is not used in bivariate sorts. Specifications that cannot be sorted have no rows in the Portfolio Returns dataset; see its dataset card, which also describes the timing conventions and the sorting rules in detail.
 

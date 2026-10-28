@@ -63,6 +63,23 @@ default:
       minimum_months: 6
       maximum_months: 18
 
+  # HXZ sort annual accounting signals at the end of June and all others
+  # monthly. These OSAP accounting signals come from quarterly data or are
+  # updated monthly, so HXZ would sort them monthly.
+  hxz_monthly_accounting:
+    - cash
+    - chtax
+    - earningsstreak
+    - earningssurprise
+    - earnsupbig
+    - intanbm
+    - intancfp
+    - intanep
+    - intansp
+    - numearnincrease
+    - revenuesurprise
+    - roaq
+
   # Annual portfolios are formed in July.
   rebalancing_month: 7
 
